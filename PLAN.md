@@ -534,6 +534,13 @@ Signal handler (`SIGINT` / `SIGTERM`) triggers:
 - `NUMERIC` → `float64` or `string`
 - Dates/Times (stored as string or integer) → `time.Time`
 
+**Handling Enums (Migration from Postgres/MySQL):**
+
+SQLite does not have a native `ENUM` type. To preserve data integrity:
+1.  Map source `ENUM` columns to `TEXT`.
+2.  Extract allowed values from the source schema (e.g., `pg_enum` in Postgres).
+3.  Add a `CHECK (column_name IN ('val1', 'val2', ...))` constraint to the table definition in SQLite.
+
 ---
 
 ## 7. Migration Engine
