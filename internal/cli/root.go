@@ -2,21 +2,27 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/dinocodesx/migration_and_backup_tool/internal/adapter/postgres"
+	"github.com/dinocodesx/migration_and_backup_tool/internal/backup"
 	"github.com/dinocodesx/migration_and_backup_tool/internal/checkpoint"
 	"github.com/dinocodesx/migration_and_backup_tool/internal/config"
 	"github.com/dinocodesx/migration_and_backup_tool/internal/metrics"
 	"github.com/dinocodesx/migration_and_backup_tool/internal/pipeline"
+	"github.com/dinocodesx/migration_and_backup_tool/internal/schema"
+	"github.com/dinocodesx/migration_and_backup_tool/internal/storage"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
 var (
-	cfgFile string
-	cfg     config.Config
+	cfgFile      string
+	manifestFile string
+	cfg          config.Config
 )
 
 var rootCmd = &cobra.Command{
@@ -44,6 +50,9 @@ func init() {
 	rootCmd.AddCommand(restoreCmd)
 	rootCmd.AddCommand(verifyCmd)
 	rootCmd.AddCommand(statusCmd)
+
+	restoreCmd.Flags().StringVar(&manifestFile, "manifest", "manifest.json", "path to backup manifest file")
+	verifyCmd.Flags().StringVar(&manifestFile, "manifest", "manifest.json", "path to backup manifest file")
 }
 
 func initConfig() {
@@ -67,6 +76,32 @@ func initConfig() {
 	}
 }
 
+func initStorage(ctx context.Context, sc config.StorageConfig) (storage.Storage, error) {
+	switch sc.Type {
+	case "local":
+		prefix := sc.Prefix
+		if prefix == "" {
+			prefix = "backups/"
+		}
+		return storage.NewLocalStorage(prefix)
+	case "s3":
+		return storage.NewS3Storage(ctx, sc.Bucket, sc.Prefix, sc.Region)
+	default:
+		return nil, fmt.Errorf("unsupported storage type: %s", sc.Type)
+	}
+}
+
+func initSerializer(format string, s *schema.Schema) (backup.Serializer, error) {
+	switch format {
+	case "parquet":
+		return backup.NewParquetSerializer(s)
+	case "ndjson":
+		return backup.NewNDJSONSerializer(), nil
+	default:
+		return nil, fmt.Errorf("unsupported backup format: %s", format)
+	}
+}
+
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Migrate data between databases",
@@ -76,7 +111,7 @@ var migrateCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
-		
+
 		// Initialize checkpoint store
 		cpPath := cfg.Checkpoint.Path
 		if cpPath == "" {
@@ -117,7 +152,7 @@ var migrateCmd = &cobra.Command{
 		}
 
 		orch := pipeline.NewOrchestrator(cfg.Concurrency, store)
-		
+
 		// Start metrics server
 		if cfg.Telemetry.MetricsAddr != "" {
 			go func() {
@@ -130,7 +165,7 @@ var migrateCmd = &cobra.Command{
 
 		opID := fmt.Sprintf("mig-%d", os.Getpid())
 		fmt.Printf("Starting migration of table %s (OpID: %s)...\n", table, opID)
-		
+
 		if err := orch.Migrate(ctx, opID, src, dst, table); err != nil {
 			return fmt.Errorf("migration failed: %w", err)
 		}
@@ -143,24 +178,135 @@ var migrateCmd = &cobra.Command{
 var backupCmd = &cobra.Command{
 	Use:   "backup",
 	Short: "Backup database to storage",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("backup called")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := viper.Unmarshal(&cfg); err != nil {
+			return fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+
+		ctx := context.Background()
+
+		src := postgres.NewPostgresAdapter()
+		if err := src.Connect(ctx, cfg.Source); err != nil {
+			return fmt.Errorf("source connect failed: %w", err)
+		}
+		defer src.Close()
+
+		st, err := initStorage(ctx, cfg.Backup.Storage)
+		if err != nil {
+			return err
+		}
+
+		if len(cfg.Source.Tables) == 0 {
+			return fmt.Errorf("no tables specified in source config")
+		}
+		table := cfg.Source.Tables[0]
+
+		s, err := src.Schema(ctx, table)
+		if err != nil {
+			return fmt.Errorf("failed to get source schema: %w", err)
+		}
+
+		ser, err := initSerializer(cfg.Backup.Format, s)
+		if err != nil {
+			return err
+		}
+
+		engine := backup.NewEngine(st, ser)
+		opID := fmt.Sprintf("bak-%d", os.Getpid())
+		fmt.Printf("Starting backup of table %s (OpID: %s)...\n", table, opID)
+
+		chunkSize := int64(cfg.Backup.ChunkSizeMB) * 1024 * 1024
+		if chunkSize == 0 {
+			chunkSize = 512 * 1024 * 1024 // Default 512MB
+		}
+
+		manifest, err := engine.Backup(ctx, opID, src, table, chunkSize)
+		if err != nil {
+			return fmt.Errorf("backup failed: %w", err)
+		}
+
+		fmt.Printf("Backup completed successfully! Row count: %d, Chunks: %d\n", manifest.RowCount, len(manifest.Chunks))
+		return nil
 	},
 }
 
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "Restore database from backup",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("restore called")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := viper.Unmarshal(&cfg); err != nil {
+			return fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+
+		ctx := context.Background()
+
+		dst := postgres.NewPostgresAdapter()
+		if err := dst.Connect(ctx, cfg.Target); err != nil {
+			return fmt.Errorf("target connect failed: %w", err)
+		}
+		defer dst.Close()
+
+		st, err := initStorage(ctx, cfg.Backup.Storage)
+		if err != nil {
+			return err
+		}
+
+		engine := backup.NewRestoreEngine(st, dst)
+		fmt.Printf("Starting restore from %s...\n", manifestFile)
+
+		if err := engine.Restore(ctx, manifestFile); err != nil {
+			return fmt.Errorf("restore failed: %w", err)
+		}
+
+		fmt.Println("Restore completed successfully!")
+		return nil
 	},
 }
 
 var verifyCmd = &cobra.Command{
 	Use:   "verify",
 	Short: "Verify backup integrity",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("verify called")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := viper.Unmarshal(&cfg); err != nil {
+			return fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+
+		ctx := context.Background()
+		st, err := initStorage(ctx, cfg.Backup.Storage)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Verifying backup at %s...\n", manifestFile)
+		reader, err := st.Get(ctx, manifestFile)
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+
+		var manifest backup.Manifest
+		if err := json.NewDecoder(reader).Decode(&manifest); err != nil {
+			return err
+		}
+
+		fmt.Printf("Manifest valid. Backup created at: %s, Rows: %d, Chunks: %d\n",
+			manifest.CreatedAt.Format(time.RFC3339), manifest.RowCount, len(manifest.Chunks))
+
+		for _, chunk := range manifest.Chunks {
+			fmt.Printf("  Checking chunk %d (%s)... ", chunk.Index, chunk.File)
+			exists, err := st.Exists(ctx, chunk.File)
+			if err != nil {
+				fmt.Printf("ERROR: %v\n", err)
+				continue
+			}
+			if !exists {
+				fmt.Println("MISSING")
+				continue
+			}
+			fmt.Println("OK")
+		}
+
+		return nil
 	},
 }
 
