@@ -946,12 +946,12 @@ masking:
 
 ### Phase 0 — Scaffold (Week 1)
 
-- [ ] `go mod init`, cobra CLI skeleton, viper config loader.
-- [ ] `internal/record`, `internal/adapter` interfaces defined.
-- [ ] `internal/errs/retry.go` implemented and unit-tested.
-- [ ] `internal/checkpoint/store.go` implemented and unit-tested.
-- [ ] `Makefile` with `build`, `test`, `test-integration`, `lint` targets.
-- [ ] `docker-compose.yml` with Postgres, MongoDB, Cassandra, Iceberg REST catalog.
+- [x] `go mod init`, cobra CLI skeleton, viper config loader.
+- [x] `internal/record`, `internal/adapter` interfaces defined.
+- [x] `internal/errs/retry.go` implemented and unit-tested.
+- [x] `internal/checkpoint/store.go` implemented and unit-tested.
+- [x] `Makefile` with `build`, `test`, `test-integration`, `lint` targets.
+- [x] `docker-compose.yml` with Postgres, MongoDB, Cassandra, Iceberg REST catalog.
 
 **Deliverable:** `gomigrate --help` works; config loads; no actual DB connectivity yet.
 
