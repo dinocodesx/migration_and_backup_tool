@@ -28,9 +28,15 @@ type SourceAdapter interface {
 	// partitions for parallel reading. Returns partition descriptors.
 	Partitions(ctx context.Context, table string, n int) ([]Partition, error)
 
-	// ReadPartition streams records from a single partition into ch.
-	// It must respect ctx cancellation and send on errCh on fatal errors.
-	ReadPartition(ctx context.Context, p Partition, ch chan<- *record.Record, errCh chan<- error)
+	// ReadPartition reads all records from a single partition, sending each
+	// to ch. It MUST close ch when done (success or error). It returns an
+	// error if the read fails fatally; non-fatal per-record errors should be
+	// sent to the dead-letter channel by the caller.
+	//
+	// The implementation MUST respect ctx cancellation and return promptly
+	// when ctx is Done (without closing ch if possible, though closing is
+	// acceptable — the caller handles both cases).
+	ReadPartition(ctx context.Context, p Partition, ch chan<- *record.Record) error
 
 	// Schema returns the canonical schema for a table/collection.
 	Schema(ctx context.Context, table string) (*schema.Schema, error)

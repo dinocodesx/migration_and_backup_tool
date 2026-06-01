@@ -1,0 +1,37 @@
+source:
+  type: postgres
+  host: localhost
+  port: 5432
+  database: testdb
+  user: user
+  password: password
+  tables:
+    - demo_users
+
+target:
+  type: postgres
+  host: localhost
+  port: 5432
+  database: testdb
+  user: user
+  password: password
+
+backup:
+  format: parquet
+  chunk_size_mb: 50
+  storage:
+    type: local
+    prefix: demo/backups/
+
+concurrency:
+  num_readers: 4
+  num_writers: 4
+  batch_size: 100
+  batch_timeout: 1s
+
+checkpoint:
+  path: demo/checkpoint_backup.bolt
+
+telemetry:
+  log_level: info
+  metrics_addr: ":9090"

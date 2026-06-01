@@ -3,8 +3,8 @@
 BINARY_NAME=gomigrate
 
 build:
-	go build -o $(BINARY_NAME) ./cmd/gomigrate
-	# go build -ldflags="-s -w" -o $(BINARY_NAME) ./cmd/gomigrate
+	# go build -o $(BINARY_NAME) ./cmd/gomigrate
+	go build -ldflags="-s -w" -o $(BINARY_NAME) ./cmd/gomigrate
 
 test:
 	go test -v ./internal/...

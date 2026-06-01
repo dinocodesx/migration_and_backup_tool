@@ -15,35 +15,49 @@ type Reader struct {
 	db *pgxpool.Pool
 }
 
+// NewReader creates a Reader backed by the given connection pool.
 func NewReader(db *pgxpool.Pool) *Reader {
 	return &Reader{db: db}
 }
 
+// Partitions splits the table into n roughly equal PK-range partitions.
+// If the table is empty, it returns an empty slice (no work to do).
 func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
-	// Simple PK range partitioning. For more complex cases, ctid or other strategies can be used.
-	var min, max int64
 	tableName := pgx.Identifier{table}.Sanitize()
-	query := fmt.Sprintf("SELECT MIN(id), MAX(id) FROM %s", tableName) // Assuming 'id' is integer PK
-	err := r.db.QueryRow(ctx, query).Scan(&min, &max)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get min/max PK: %w", err)
+	query := fmt.Sprintf("SELECT MIN(id), MAX(id) FROM %s", tableName)
+
+	// Use nullable pointers so that an empty table returns (nil, nil) instead
+	// of causing a scan error.
+	var minID, maxID *int64
+	if err := r.db.QueryRow(ctx, query).Scan(&minID, &maxID); err != nil {
+		return nil, fmt.Errorf("failed to get min/max PK for table %s: %w", table, err)
 	}
 
+	// Empty table — nothing to partition.
+	if minID == nil || maxID == nil {
+		return []adapter.Partition{}, nil
+	}
+	min, max := *minID, *maxID
+
+	// Single record or range is zero — return a single partition.
 	if max <= min {
-		return []adapter.Partition{{ID: "p0", Table: table, Start: min, End: max}}, nil
+		return []adapter.Partition{{ID: "p0", Table: table, Start: min, End: max + 1}}, nil
 	}
 
-	partitions := make([]adapter.Partition, 0, n)
+	if n <= 0 {
+		n = 1
+	}
 	step := (max - min) / int64(n)
 	if step == 0 {
 		step = 1
 	}
 
+	partitions := make([]adapter.Partition, 0, n)
 	for i := 0; i < n; i++ {
 		start := min + int64(i)*step
 		end := start + step
 		if i == n-1 {
-			end = max + 1 // Ensure we cover the last record
+			end = max + 1 // inclusive upper bound
 		}
 		partitions = append(partitions, adapter.Partition{
 			ID:    fmt.Sprintf("p%d", i),
@@ -56,33 +70,49 @@ func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter
 	return partitions, nil
 }
 
-func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record, errCh chan<- error) {
-	// Use Identifier for safe table name quoting
+// ReadPartition streams every record in partition p onto ch, then closes ch.
+// It honours ctx cancellation and returns a non-nil error on any fatal read
+// failure.
+func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
+	defer close(ch)
+
 	tableName := pgx.Identifier{p.Table}.Sanitize()
 	query := fmt.Sprintf("SELECT * FROM %s WHERE id >= $1 AND id < $2", tableName)
+
 	rows, err := r.db.Query(ctx, query, p.Start, p.End)
 	if err != nil {
-		errCh <- fmt.Errorf("failed to read partition %s: %w", p.ID, err)
-		return
+		return fmt.Errorf("failed to query partition %s of table %s: %w", p.ID, p.Table, err)
 	}
 	defer rows.Close()
 
-	fieldDescriptions := rows.FieldDescriptions()
+	fieldDescs := rows.FieldDescriptions()
 
 	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			errCh <- err
-			return
+		// Check for context cancellation between rows.
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
-		data := make(map[string]any)
+		values, err := rows.Values()
+		if err != nil {
+			return fmt.Errorf("failed to scan row in partition %s: %w", p.ID, err)
+		}
+
+		data := make(map[string]any, len(fieldDescs))
 		var id string
-		for i, fd := range fieldDescriptions {
-			data[string(fd.Name)] = values[i]
-			if string(fd.Name) == "id" {
+		var offset any
+
+		for i, fd := range fieldDescs {
+			colName := string(fd.Name)
+			data[colName] = values[i]
+			if colName == "id" {
 				id = fmt.Sprintf("%v", values[i])
+				offset = values[i]
 			}
+		}
+		// Fallback: if no "id" column, use the first column as offset.
+		if offset == nil && len(values) > 0 {
+			offset = values[0]
 		}
 
 		rec := &record.Record{
@@ -91,22 +121,20 @@ func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan
 			Metadata: record.RecordMetadata{
 				SourceTable: p.Table,
 				PartitionID: p.ID,
-				Offset:      values[0], // Assuming first column is ID/Offset
+				Offset:      offset,
 			},
 		}
 
 		select {
 		case ch <- rec:
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		}
 	}
 
 	if err := rows.Err(); err != nil {
-		errCh <- err
-		return
+		return fmt.Errorf("row iteration error in partition %s: %w", p.ID, err)
 	}
 
-	// Signal successful completion by sending nil to errCh
-	errCh <- nil
+	return nil
 }

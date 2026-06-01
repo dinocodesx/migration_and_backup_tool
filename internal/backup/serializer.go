@@ -6,14 +6,25 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/record"
 )
 
-// Serializer defines the interface for converting records into a streamable format.
+// Serializer converts records into a streamable binary format.
+//
+// Lifecycle:
+//
+//  1. Call Open(w) to bind the serializer to an output writer.
+//  2. Call Serialize(rec) for each record.
+//  3. Call Close() to flush all buffered data and finalise the format (e.g.
+//     write Parquet footer). After Close, the serializer MUST NOT be reused.
+//
+// Thread safety: implementations are NOT required to be safe for concurrent
+// use; the backup engine calls these methods from a single goroutine.
 type Serializer interface {
-	// Serialize writes a single record to the writer.
-	Serialize(w io.Writer, rec *record.Record) error
+	// Open binds the serializer to w for the lifetime of one chunk.
+	Open(w io.Writer) error
 
-	// Flush ensures any buffered data is written to the writer.
-	Flush(w io.Writer) error
+	// Serialize encodes a single record into the underlying writer.
+	Serialize(rec *record.Record) error
 
-	// Close finalizes the serialization process.
-	Close(w io.Writer) error
+	// Close flushes any buffered data and finalises the format (e.g. Parquet
+	// footer). The caller is responsible for closing w itself.
+	Close() error
 }

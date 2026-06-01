@@ -16,6 +16,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	pgmodule "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.uber.org/zap"
 )
 
 func TestPostgresToPostgresMigration(t *testing.T) {
@@ -125,7 +126,7 @@ func TestPostgresToPostgresMigration(t *testing.T) {
 	}
 
 	mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
-	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper)
+	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, zap.NewNop())
 	if err := orch.Migrate(ctx, "test-op", src, dst, "source_users"); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
