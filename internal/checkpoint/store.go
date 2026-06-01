@@ -12,6 +12,8 @@ import (
 var (
 	bucketMeta       = []byte("meta")
 	bucketPartitions = []byte("partitions")
+
+	ErrCheckpointNotFound = fmt.Errorf("checkpoint not found")
 )
 
 // Store is a bbolt-backed checkpoint store.
@@ -81,7 +83,7 @@ func (s *Store) GetPartition(opID, partitionID string) (*PartitionCheckpoint, er
 		b := tx.Bucket(bucketPartitions)
 		data := b.Get([]byte(fmt.Sprintf("%s:%s", opID, partitionID)))
 		if data == nil {
-			return fmt.Errorf("partition checkpoint not found")
+			return ErrCheckpointNotFound
 		}
 
 		dec := json.NewDecoder(bytes.NewReader(data))
@@ -92,4 +94,30 @@ func (s *Store) GetPartition(opID, partitionID string) (*PartitionCheckpoint, er
 		return nil, err
 	}
 	return &cp, nil
+}
+
+// SaveStatus updates only the status of a partition.
+func (s *Store) SaveStatus(opID, partitionID string, status PartitionStatus) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketPartitions)
+		key := []byte(fmt.Sprintf("%s:%s", opID, partitionID))
+		data := b.Get(key)
+		if data == nil {
+			return ErrCheckpointNotFound
+		}
+
+		var cp PartitionCheckpoint
+		if err := json.Unmarshal(data, &cp); err != nil {
+			return err
+		}
+
+		cp.Status = status
+		cp.UpdatedAt = time.Now()
+		
+		newData, err := json.Marshal(cp)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, newData)
+	})
 }

@@ -8,8 +8,9 @@ type Schema struct {
 
 // Column represents a single field in a schema.
 type Column struct {
-	Name       string
-	Type       string
-	Nullable   bool
-	PrimaryKey bool
+	Name          string
+	Type          string
+	Nullable      bool
+	PrimaryKey    bool
+	AllowedValues []string // For Enums/Sets
 }
