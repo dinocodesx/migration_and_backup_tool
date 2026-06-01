@@ -55,6 +55,7 @@ A production server holds **~100 million user records** spread across one or mor
 | Source & Target | MongoDB          | `mongo-driver`                                 |
 | Source & Target | Apache Cassandra | `gocql`                                        |
 | Source & Target | Apache Iceberg   | REST Catalog API + Parquet (`apache/arrow-go`) |
+| Source & Target | SQLite           | `modernc.org/sqlite` (Pure Go)                 |
 
 > **Note:** "Mongo" and "MongoDB" in the requirements are treated as one engine. If FoundationDB or another engine surfaces later, the adapter interface makes addition straightforward.
 
@@ -317,6 +318,7 @@ type TargetAdapter interface {
 | MongoDB    | `_id` ObjectID range split (or `$sample`-based)     |
 | Cassandra  | Native token range splits (via `system.local`/ring) |
 | Iceberg    | File-level splits (one goroutine per Parquet file)  |
+| SQLite     | Integer PK range split (or `ROWID` range)           |
 
 ---
 
@@ -507,6 +509,30 @@ Signal handler (`SIGINT` / `SIGTERM`) triggers:
 - `json` → `map[string]any`
 - `decimal` → `float64` (or custom decimal type if precision is critical)
 - `enum` → `string`
+
+### 6.6 SQLite Adapter
+
+**Reading:**
+
+- Use `modernc.org/sqlite` (Pure Go, no CGO).
+- Introspect `sqlite_schema` (or `sqlite_master`) for table info.
+- Partition via `WHERE ROWID >= ? AND ROWID < ?` or integer PK range.
+- Use `sql.Rows` for streaming results.
+
+**Writing:**
+
+- Use multi-row `INSERT` for batching (e.g., `INSERT INTO table VALUES (...), (...), ...`).
+- Wrap each batch in a transaction (`BEGIN` / `COMMIT`) for critical performance gains.
+- Use `INSERT ... ON CONFLICT DO UPDATE` (requires SQLite 3.24.0+) for idempotent migrations.
+
+**Schema Mapping:**
+
+- `INTEGER` → `int64`
+- `TEXT` → `string`
+- `REAL` → `float64`
+- `BLOB` → `[]byte`
+- `NUMERIC` → `float64` or `string`
+- Dates/Times (stored as string or integer) → `time.Time`
 
 ---
 
@@ -1074,6 +1100,18 @@ masking:
 - [ ] Backup/restore support for MySQL.
 
 **Deliverable:** MySQL fully supported as source and target.
+
+---
+
+### Phase 9 — SQLite Support (Week 16)
+
+- [ ] `adapter/sqlite/reader.go`: ROWID/PK range partitioner.
+- [ ] `adapter/sqlite/writer.go`: Batched INSERT writer with transaction management.
+- [ ] `adapter/sqlite/schema.go`: `sqlite_schema` introspection.
+- [ ] Integration tests for SQLite ↔ Postgres, SQLite ↔ Mongo.
+- [ ] Backup/restore support for SQLite.
+
+**Deliverable:** SQLite fully supported as source and target.
 
 ---
 

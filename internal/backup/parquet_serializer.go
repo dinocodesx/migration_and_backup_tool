@@ -3,6 +3,7 @@ package backup
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -16,10 +17,12 @@ import (
 
 // ParquetSerializer implements the Serializer interface for Parquet format.
 type ParquetSerializer struct {
-	schema *schema.Schema
-	arrow  *arrow.Schema
-	pool   memory.Allocator
-	rows   []*record.Record
+	schema      *schema.Schema
+	arrowSchema *arrow.Schema
+	pool        memory.Allocator
+	rows        []*record.Record
+	writer      *pqarrow.FileWriter
+	batchSize   int
 }
 
 // NewParquetSerializer creates a new ParquetSerializer for the given schema.
@@ -30,14 +33,30 @@ func NewParquetSerializer(s *schema.Schema) (*ParquetSerializer, error) {
 	}
 
 	return &ParquetSerializer{
-		schema: s,
-		arrow:  arrowSchema,
-		pool:   memory.NewGoAllocator(),
+		schema:      s,
+		arrowSchema: arrowSchema,
+		pool:        memory.NewGoAllocator(),
+		batchSize:   1000, // Default batch size for flushing
 	}, nil
 }
 
 func (s *ParquetSerializer) Serialize(w io.Writer, rec *record.Record) error {
+	if s.writer == nil {
+		writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Zstd))
+		arrowProps := pqarrow.DefaultWriterProps()
+		var err error
+		s.writer, err = pqarrow.NewFileWriter(s.arrowSchema, w, writerProps, arrowProps)
+		if err != nil {
+			return fmt.Errorf("failed to create parquet writer: %w", err)
+		}
+	}
+
 	s.rows = append(s.rows, rec)
+
+	if len(s.rows) >= s.batchSize {
+		return s.Flush(w)
+	}
+
 	return nil
 }
 
@@ -45,8 +64,11 @@ func (s *ParquetSerializer) Flush(w io.Writer) error {
 	if len(s.rows) == 0 {
 		return nil
 	}
+	if s.writer == nil {
+		return fmt.Errorf("writer not initialized")
+	}
 
-	rb := array.NewRecordBuilder(s.pool, s.arrow)
+	rb := array.NewRecordBuilder(s.pool, s.arrowSchema)
 	defer rb.Release()
 
 	for i, col := range s.schema.Columns {
@@ -66,20 +88,8 @@ func (s *ParquetSerializer) Flush(w io.Writer) error {
 	arrowRec := rb.NewRecord()
 	defer arrowRec.Release()
 
-	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Zstd))
-	arrowProps := pqarrow.DefaultWriterProps()
-
-	writer, err := pqarrow.NewFileWriter(s.arrow, w, writerProps, arrowProps)
-	if err != nil {
-		return fmt.Errorf("failed to create parquet writer: %w", err)
-	}
-
-	if err := writer.Write(arrowRec); err != nil {
+	if err := s.writer.Write(arrowRec); err != nil {
 		return fmt.Errorf("failed to write arrow record: %w", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		return fmt.Errorf("failed to close parquet writer: %w", err)
 	}
 
 	s.rows = nil
@@ -87,7 +97,16 @@ func (s *ParquetSerializer) Flush(w io.Writer) error {
 }
 
 func (s *ParquetSerializer) Close(w io.Writer) error {
-	return s.Flush(w)
+	if err := s.Flush(w); err != nil {
+		return err
+	}
+	if s.writer != nil {
+		if err := s.writer.Close(); err != nil {
+			return fmt.Errorf("failed to close parquet writer: %w", err)
+		}
+		s.writer = nil
+	}
+	return nil
 }
 
 func convertToArrowSchema(s *schema.Schema) (*arrow.Schema, error) {
@@ -151,6 +170,17 @@ func appendValue(b array.Builder, val any, t string) error {
 		v, ok := val.(bool)
 		if !ok {
 			return fmt.Errorf("expected bool, got %T", val)
+		}
+		b.Append(v)
+	case *array.TimestampBuilder:
+		var v arrow.Timestamp
+		switch t := val.(type) {
+		case time.Time:
+			v = arrow.Timestamp(t.UnixMicro())
+		case int64:
+			v = arrow.Timestamp(t)
+		default:
+			return fmt.Errorf("expected time.Time or int64 for timestamp, got %T", val)
 		}
 		b.Append(v)
 	default:

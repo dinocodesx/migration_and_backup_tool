@@ -1,14 +1,23 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 
+	"github.com/dinocodesx/migration_and_backup_tool/internal/adapter/postgres"
+	"github.com/dinocodesx/migration_and_backup_tool/internal/checkpoint"
+	"github.com/dinocodesx/migration_and_backup_tool/internal/config"
+	"github.com/dinocodesx/migration_and_backup_tool/internal/metrics"
+	"github.com/dinocodesx/migration_and_backup_tool/internal/pipeline"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-var cfgFile string
+var (
+	cfgFile string
+	cfg     config.Config
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "gomigrate",
@@ -61,8 +70,73 @@ func initConfig() {
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Migrate data between databases",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("migrate called")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := viper.Unmarshal(&cfg); err != nil {
+			return fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+
+		ctx := context.Background()
+		
+		// Initialize checkpoint store
+		cpPath := cfg.Checkpoint.Path
+		if cpPath == "" {
+			cpPath = "checkpoint.bolt"
+		}
+		store, err := checkpoint.NewStore(cpPath)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		// Initialize adapters (Phase 1: PostgreSQL)
+		src := postgres.NewPostgresAdapter()
+		if err := src.Connect(ctx, cfg.Source); err != nil {
+			return fmt.Errorf("source connect failed: %w", err)
+		}
+		defer src.Close()
+
+		dst := postgres.NewPostgresAdapter()
+		if err := dst.Connect(ctx, cfg.Target); err != nil {
+			return fmt.Errorf("target connect failed: %w", err)
+		}
+		defer dst.Close()
+
+		// For Phase 1, we assume we're migrating the first table in the list
+		if len(cfg.Source.Tables) == 0 {
+			return fmt.Errorf("no tables specified in source config")
+		}
+		table := cfg.Source.Tables[0]
+
+		// Apply schema to target
+		s, err := src.Schema(ctx, table)
+		if err != nil {
+			return fmt.Errorf("failed to get source schema: %w", err)
+		}
+		if err := dst.ApplySchema(ctx, s); err != nil {
+			return fmt.Errorf("failed to apply schema to target: %w", err)
+		}
+
+		orch := pipeline.NewOrchestrator(cfg.Concurrency, store)
+		
+		// Start metrics server
+		if cfg.Telemetry.MetricsAddr != "" {
+			go func() {
+				if err := metrics.StartMetricsServer(cfg.Telemetry.MetricsAddr); err != nil {
+					fmt.Printf("Warning: metrics server failed: %v\n", err)
+				}
+			}()
+			fmt.Printf("Metrics server started at %s\n", cfg.Telemetry.MetricsAddr)
+		}
+
+		opID := fmt.Sprintf("mig-%d", os.Getpid())
+		fmt.Printf("Starting migration of table %s (OpID: %s)...\n", table, opID)
+		
+		if err := orch.Migrate(ctx, opID, src, dst, table); err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+
+		fmt.Println("Migration completed successfully!")
+		return nil
 	},
 }
 

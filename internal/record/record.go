@@ -13,7 +13,8 @@ type Record struct {
 type RecordMetadata struct {
 	SourceTable   string
 	SourceDB      string
-	PartitionKey  string
+	PartitionID   string
+	Offset        any                // Logical offset (e.g., PK value, ctid, or cursor position)
 	Checksum      [32]byte           // SHA-256 of Data bytes
 	IngestionTime time.Time
 }
