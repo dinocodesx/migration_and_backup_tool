@@ -2,19 +2,20 @@ package backup
 
 import (
 	"time"
+
 	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
 // Manifest represents the index of a completed backup.
 type Manifest struct {
-	Version        int             `json:"version"`
-	OperationID    string          `json:"operation_id"`
-	Source         SourceMetadata  `json:"source"`
-	CreatedAt      time.Time       `json:"created_at"`
-	RowCount       int64           `json:"row_count"`
-	ChunkSizeBytes int64           `json:"chunk_size_bytes"`
-	Chunks         []Chunk         `json:"chunks"`
-	SchemaSnapshot schema.Schema   `json:"schema_snapshot"`
+	Version        int            `json:"version"`
+	OperationID    string         `json:"operation_id"`
+	Source         SourceMetadata `json:"source"`
+	CreatedAt      time.Time      `json:"created_at"`
+	RowCount       int64          `json:"row_count"`
+	ChunkSizeBytes int64          `json:"chunk_size_bytes"`
+	Chunks         []Chunk        `json:"chunks"`
+	SchemaSnapshot schema.Schema  `json:"schema_snapshot"`
 }
 
 // SourceMetadata contains information about the database source.

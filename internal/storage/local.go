@@ -42,7 +42,7 @@ func (s *LocalStorage) Put(ctx context.Context, path string, reader io.Reader) (
 	if err != nil {
 		return err
 	}
-	
+
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return fmt.Errorf("failed to create parent directory: %w", err)
@@ -52,7 +52,7 @@ func (s *LocalStorage) Put(ctx context.Context, path string, reader io.Reader) (
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
-	
+
 	defer func() {
 		closeErr := f.Close()
 		if err == nil {
@@ -92,9 +92,9 @@ func (s *LocalStorage) List(ctx context.Context, prefix string) ([]string, error
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var paths []string
-	
+
 	// If fullPrefix is a file, just return it if it matches
 	info, err := os.Stat(fullPrefix)
 	if err == nil && !info.IsDir() {

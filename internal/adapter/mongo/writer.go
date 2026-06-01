@@ -26,9 +26,9 @@ func (a *MongoAdapter) WriteBatch(ctx context.Context, batch []*record.Record) (
 		// Use Record.ID as the _id for the document
 		// Note: we might need to preserve the original _id if it's already in rec.Data
 		// but typically we map the source ID to the target ID.
-		
+
 		filter := bson.M{"_id": rec.ID}
-		
+
 		// If rec.Data already contains _id, we should ensure it matches rec.ID or remove it
 		// to avoid duplicate key errors if the driver tries to insert it as well.
 		delete(rec.Data, "_id")
@@ -37,7 +37,7 @@ func (a *MongoAdapter) WriteBatch(ctx context.Context, batch []*record.Record) (
 			SetFilter(filter).
 			SetReplacement(rec.Data).
 			SetUpsert(true)
-		
+
 		models[i] = model
 	}
 

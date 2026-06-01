@@ -68,7 +68,7 @@ func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan
 	defer rows.Close()
 
 	fieldDescriptions := rows.FieldDescriptions()
-	
+
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {

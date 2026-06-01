@@ -11,13 +11,13 @@ import (
 // GetSchema introspects the PostgreSQL database to get the schema of a table.
 func GetSchema(ctx context.Context, db *pgxpool.Pool, table string) (*schema.Schema, error) {
 	query := `
-		SELECT 
-			column_name, 
-			data_type, 
+		SELECT
+			column_name,
+			data_type,
 			is_nullable,
 			column_default
-		FROM information_schema.columns 
-		WHERE table_name = $1 
+		FROM information_schema.columns
+		WHERE table_name = $1
 		ORDER BY ordinal_position`
 
 	rows, err := db.Query(ctx, query, table)

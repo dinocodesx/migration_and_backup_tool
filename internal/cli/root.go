@@ -20,6 +20,8 @@ import (
 	"github.com/spf13/viper"
 )
 
+const Version = "v0.0.1-alpha"
+
 var (
 	cfgFile      string
 	manifestFile string
@@ -27,8 +29,9 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "gomigrate",
-	Short: "A production-grade database migration and backup tool",
+	Use:     "gomigrate",
+	Version: Version,
+	Short:   "A production-grade database migration and backup tool",
 	Long: `GoMigrate is a concurrent, resumable tool for migrating and backing up
 large-scale database workloads (100M+ records).`,
 }
@@ -51,6 +54,7 @@ func init() {
 	rootCmd.AddCommand(restoreCmd)
 	rootCmd.AddCommand(verifyCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	restoreCmd.Flags().StringVar(&manifestFile, "manifest", "manifest.json", "path to backup manifest file")
 	verifyCmd.Flags().StringVar(&manifestFile, "manifest", "manifest.json", "path to backup manifest file")
@@ -330,5 +334,13 @@ var statusCmd = &cobra.Command{
 	Short: "Check status of a checkpoint",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("status called")
+	},
+}
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print the version number of gomigrate",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("gomigrate %s\n", Version)
 	},
 }

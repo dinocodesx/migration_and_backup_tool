@@ -21,12 +21,12 @@ const (
 
 // CircuitBreaker implements the circuit breaker pattern to prevent cascading failures.
 type CircuitBreaker struct {
-	mu           sync.RWMutex
-	state        State
-	failures     int
-	threshold    int
-	timeout      time.Duration
-	lastFailure  time.Time
+	mu          sync.RWMutex
+	state       State
+	failures    int
+	threshold   int
+	timeout     time.Duration
+	lastFailure time.Time
 }
 
 // NewCircuitBreaker creates a new circuit breaker.
@@ -72,11 +72,11 @@ func (cb *CircuitBreaker) allow() bool {
 	if cb.state == StateHalfOpen {
 		// In half-open, we allow one request to trial the circuit.
 		// Subsequent concurrent requests will be blocked until the trial finishes.
-		// We use a simple strategy: if it's already half-open, we only allow it 
+		// We use a simple strategy: if it's already half-open, we only allow it
 		// if we haven't seen a failure/success since entering half-open.
-		// For simplicity in this implementation, we'll just allow the first one 
+		// For simplicity in this implementation, we'll just allow the first one
 		// and others will wait or be rejected.
-		return false 
+		return false
 	}
 
 	return true

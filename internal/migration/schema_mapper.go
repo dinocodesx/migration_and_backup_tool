@@ -22,7 +22,7 @@ func NewSchemaMapper(srcType, dstType string) *SchemaMapper {
 func (m *SchemaMapper) MapRecord(rec *record.Record) *record.Record {
 	// For now, implement basic standardization logic.
 	// In a full implementation, this would use a mapping config file (PLAN.md 7.2).
-	
+
 	// Example: Mongo -> Postgres coercion
 	if m.sourceType == "mongo" && m.targetType == "postgres" {
 		// Ensure _id is handled if not already string

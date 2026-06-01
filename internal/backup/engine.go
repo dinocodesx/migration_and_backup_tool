@@ -32,7 +32,7 @@ func NewEngine(s storage.Storage, ser Serializer) *Engine {
 // Backup runs the backup process for a given source and table.
 func (e *Engine) Backup(ctx context.Context, opID string, src adapter.SourceAdapter, table string, chunkSize int64) (*Manifest, error) {
 	startTime := time.Now().UTC()
-	
+
 	s, err := src.Schema(ctx, table)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
@@ -63,7 +63,7 @@ func (e *Engine) Backup(ctx context.Context, opID string, src adapter.SourceAdap
 
 		chunkIndex := i
 		chunkFile := fmt.Sprintf("chunk-%04d.parquet.zst", chunkIndex)
-		
+
 		rowCount, checksum, err := e.writeChunk(ctx, chunkFile, recordCh, errCh)
 		if err != nil {
 			return nil, fmt.Errorf("failed to write chunk %d: %w", chunkIndex, err)
@@ -79,7 +79,7 @@ func (e *Engine) Backup(ctx context.Context, opID string, src adapter.SourceAdap
 	}
 
 	manifest.RowCount = totalRows
-	
+
 	// Write manifest
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -95,7 +95,7 @@ func (e *Engine) Backup(ctx context.Context, opID string, src adapter.SourceAdap
 
 func (e *Engine) writeChunk(ctx context.Context, path string, recordCh <-chan *record.Record, errCh <-chan error) (int64, string, error) {
 	pr, pw := io.Pipe()
-	
+
 	hash := sha256.New()
 	mw := io.MultiWriter(pw, hash)
 
