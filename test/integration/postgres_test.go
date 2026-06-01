@@ -10,6 +10,7 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/adapter/postgres"
 	"github.com/dinocodesx/gomigrate/internal/checkpoint"
 	"github.com/dinocodesx/gomigrate/internal/config"
+	"github.com/dinocodesx/gomigrate/internal/migration"
 	"github.com/dinocodesx/gomigrate/internal/pipeline"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
@@ -123,7 +124,8 @@ func TestPostgresToPostgresMigration(t *testing.T) {
 		t.Fatalf("failed to apply schema: %v", err)
 	}
 
-	orch := pipeline.NewOrchestrator(cfg.Concurrency, store)
+	mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
+	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper)
 	if err := orch.Migrate(ctx, "test-op", src, dst, "source_users"); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}

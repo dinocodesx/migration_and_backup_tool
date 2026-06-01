@@ -1032,13 +1032,13 @@ masking:
 
 ### Phase 3 — MongoDB Adapter (Week 6)
 
-- [ ] `adapter/mongo/reader.go`: ObjectID-range partitioner + cursor.
-- [ ] `adapter/mongo/writer.go`: BulkWrite upsert.
-- [ ] `adapter/mongo/schema.go`: inferred schema from sample.
-- [ ] Schema mapper: Mongo → Postgres type coercion.
-- [ ] `gomigrate migrate` Mongo → Postgres and Postgres → Mongo.
-- [ ] Backup/restore for MongoDB.
-- [ ] Integration tests.
+- [x] `adapter/mongo/reader.go`: ObjectID-range partitioner + cursor.
+- [x] `adapter/mongo/writer.go`: BulkWrite upsert.
+- [x] `adapter/mongo/schema.go`: inferred schema from sample.
+- [x] Schema mapper: Mongo → Postgres type coercion.
+- [x] `gomigrate migrate` Mongo → Postgres and Postgres → Mongo.
+- [x] Backup/restore for MongoDB.
+- [x] Integration tests.
 
 **Deliverable:** MongoDB fully supported as source and target.
 

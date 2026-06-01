@@ -10,6 +10,7 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/checkpoint"
 	"github.com/dinocodesx/gomigrate/internal/config"
 	"github.com/dinocodesx/gomigrate/internal/metrics"
+	"github.com/dinocodesx/gomigrate/internal/migration"
 	"github.com/dinocodesx/gomigrate/internal/record"
 	"golang.org/x/sync/errgroup"
 )
@@ -18,13 +19,15 @@ import (
 type Orchestrator struct {
 	config     config.ConcurrencyConfig
 	checkpoint *checkpoint.Store
+	mapper     *migration.SchemaMapper
 }
 
 // NewOrchestrator creates a new orchestrator.
-func NewOrchestrator(cfg config.ConcurrencyConfig, cp *checkpoint.Store) *Orchestrator {
+func NewOrchestrator(cfg config.ConcurrencyConfig, cp *checkpoint.Store, mapper *migration.SchemaMapper) *Orchestrator {
 	return &Orchestrator{
 		config:     cfg,
 		checkpoint: cp,
+		mapper:     mapper,
 	}
 }
 
@@ -90,7 +93,14 @@ func (o *Orchestrator) Migrate(ctx context.Context, opID string, src adapter.Sou
 						return nil
 					}
 					metrics.RecordsRead.WithLabelValues(table).Inc()
-					batch = append(batch, rec)
+					
+					// Apply transformation/mapping
+					mappedRec := rec
+					if o.mapper != nil {
+						mappedRec = o.mapper.MapRecord(rec)
+					}
+					
+					batch = append(batch, mappedRec)
 					if len(batch) >= o.config.BatchSize {
 						batchCh <- batch
 						batch = nil

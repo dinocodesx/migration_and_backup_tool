@@ -7,11 +7,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/dinocodesx/gomigrate/internal/adapter/postgres"
+	"github.com/dinocodesx/gomigrate/internal/adapter/factory"
 	"github.com/dinocodesx/gomigrate/internal/backup"
 	"github.com/dinocodesx/gomigrate/internal/checkpoint"
 	"github.com/dinocodesx/gomigrate/internal/config"
 	"github.com/dinocodesx/gomigrate/internal/metrics"
+	"github.com/dinocodesx/gomigrate/internal/migration"
 	"github.com/dinocodesx/gomigrate/internal/pipeline"
 	"github.com/dinocodesx/gomigrate/internal/schema"
 	"github.com/dinocodesx/gomigrate/internal/storage"
@@ -28,7 +29,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "gomigrate",
 	Short: "A production-grade database migration and backup tool",
-	Long: `GoMigrate is a concurrent, resumable tool for migrating and backing up 
+	Long: `GoMigrate is a concurrent, resumable tool for migrating and backing up
 large-scale database workloads (100M+ records).`,
 }
 
@@ -123,14 +124,19 @@ var migrateCmd = &cobra.Command{
 		}
 		defer store.Close()
 
-		// Initialize adapters (Phase 1: PostgreSQL)
-		src := postgres.NewPostgresAdapter()
+		src, err := factory.NewSourceAdapter(cfg.Source.Type)
+		if err != nil {
+			return err
+		}
 		if err := src.Connect(ctx, cfg.Source); err != nil {
 			return fmt.Errorf("source connect failed: %w", err)
 		}
 		defer src.Close()
 
-		dst := postgres.NewPostgresAdapter()
+		dst, err := factory.NewTargetAdapter(cfg.Target.Type)
+		if err != nil {
+			return err
+		}
 		if err := dst.Connect(ctx, cfg.Target); err != nil {
 			return fmt.Errorf("target connect failed: %w", err)
 		}
@@ -151,7 +157,10 @@ var migrateCmd = &cobra.Command{
 			return fmt.Errorf("failed to apply schema to target: %w", err)
 		}
 
-		orch := pipeline.NewOrchestrator(cfg.Concurrency, store)
+		// Initialize mapper
+		mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
+
+		orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper)
 
 		// Start metrics server
 		if cfg.Telemetry.MetricsAddr != "" {
@@ -185,7 +194,10 @@ var backupCmd = &cobra.Command{
 
 		ctx := context.Background()
 
-		src := postgres.NewPostgresAdapter()
+		src, err := factory.NewSourceAdapter(cfg.Source.Type)
+		if err != nil {
+			return err
+		}
 		if err := src.Connect(ctx, cfg.Source); err != nil {
 			return fmt.Errorf("source connect failed: %w", err)
 		}
@@ -240,7 +252,10 @@ var restoreCmd = &cobra.Command{
 
 		ctx := context.Background()
 
-		dst := postgres.NewPostgresAdapter()
+		dst, err := factory.NewTargetAdapter(cfg.Target.Type)
+		if err != nil {
+			return err
+		}
 		if err := dst.Connect(ctx, cfg.Target); err != nil {
 			return fmt.Errorf("target connect failed: %w", err)
 		}

@@ -18,6 +18,9 @@ type Partition struct {
 
 // SourceAdapter defines the interface for databases we read from.
 type SourceAdapter interface {
+	// Type returns the database type (e.g., "postgres", "mongo").
+	Type() string
+
 	// Connect validates credentials and opens a connection pool.
 	Connect(ctx context.Context, cfg config.DBConfig) error
 
@@ -38,6 +41,9 @@ type SourceAdapter interface {
 
 // TargetAdapter defines the interface for databases we write to.
 type TargetAdapter interface {
+	// Type returns the database type.
+	Type() string
+
 	// Connect validates credentials and opens a connection pool.
 	Connect(ctx context.Context, cfg config.DBConfig) error
 

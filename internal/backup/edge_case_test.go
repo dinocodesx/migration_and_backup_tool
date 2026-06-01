@@ -18,8 +18,9 @@ type MockSourceAdapter struct {
 	err     error
 }
 
+func (m *MockSourceAdapter) Type() string                                            { return "mock" }
 func (m *MockSourceAdapter) Connect(ctx context.Context, cfg config.DBConfig) error { return nil }
-func (m *MockSourceAdapter) Close() error                                          { return nil }
+func (m *MockSourceAdapter) Close() error                                           { return nil }
 func (m *MockSourceAdapter) Schema(ctx context.Context, table string) (*schema.Schema, error) {
 	return &schema.Schema{Name: table}, nil
 }
@@ -49,7 +50,7 @@ func (f *FaultyStorage) Put(ctx context.Context, path string, reader io.Reader) 
 	return err
 }
 func (f *FaultyStorage) Get(ctx context.Context, path string) (io.ReadCloser, error) { return nil, nil }
-func (f *FaultyStorage) List(ctx context.Context, prefix string) ([]string, error)    { return nil, nil }
+func (f *FaultyStorage) List(ctx context.Context, prefix string) ([]string, error)   { return nil, nil }
 func (f *FaultyStorage) Delete(ctx context.Context, path string) error               { return nil }
 func (f *FaultyStorage) Exists(ctx context.Context, path string) (bool, error)       { return false, nil }
 
