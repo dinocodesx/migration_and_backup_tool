@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -35,7 +36,9 @@ func NewStore(path string) (*Store, error) {
 		return nil
 	})
 	if err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, fmt.Errorf("failed to initialize buckets: %v; close error: %w", err, closeErr)
+		}
 		return nil, fmt.Errorf("failed to initialize buckets: %w", err)
 	}
 
@@ -80,7 +83,10 @@ func (s *Store) GetPartition(opID, partitionID string) (*PartitionCheckpoint, er
 		if data == nil {
 			return fmt.Errorf("partition checkpoint not found")
 		}
-		return json.Unmarshal(data, &cp)
+
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.UseNumber()
+		return dec.Decode(&cp)
 	})
 	if err != nil {
 		return nil, err

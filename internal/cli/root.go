@@ -19,7 +19,7 @@ large-scale database workloads (100M+ records).`,
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -48,7 +48,12 @@ func initConfig() {
 	viper.AutomaticEnv()
 	viper.SetEnvPrefix("GOMIGRATE")
 
-	if err := viper.ReadInConfig(); err == nil {
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			fmt.Fprintf(os.Stderr, "Error reading config file (%s): %v\n", viper.ConfigFileUsed(), err)
+			os.Exit(1)
+		}
+	} else {
 		fmt.Println("Using config file:", viper.ConfigFileUsed())
 	}
 }

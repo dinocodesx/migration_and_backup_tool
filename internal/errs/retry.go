@@ -28,7 +28,11 @@ func (p RetryPolicy) NextInterval(attempt int) time.Duration {
 	if attempt <= 0 {
 		return 0
 	}
-	
+
+	if p.MaxAttempts > 0 && attempt > p.MaxAttempts {
+		attempt = p.MaxAttempts
+	}
+
 	interval := float64(p.InitialInterval)
 	for i := 1; i < attempt; i++ {
 		interval *= p.Multiplier
@@ -39,9 +43,18 @@ func (p RetryPolicy) NextInterval(attempt int) time.Duration {
 	}
 
 	if p.Jitter > 0 {
-		jitterRange := interval * p.Jitter
+		jitter := p.Jitter
+		if jitter > 1.0 {
+			jitter = 1.0
+		}
+
+		jitterRange := interval * jitter
 		minJitter := interval - (jitterRange / 2)
 		interval = minJitter + (rand.Float64() * jitterRange)
+	}
+
+	if interval <= 0 && p.InitialInterval > 0 {
+		return 1 * time.Millisecond
 	}
 
 	return time.Duration(interval)
