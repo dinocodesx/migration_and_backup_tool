@@ -116,7 +116,7 @@ func (a *MongoAdapter) ReadPartition(ctx context.Context, p adapter.Partition, c
 	}
 
 	opts := options.Find().SetSort(bson.D{{Key: "_id", Value: 1}})
-	
+
 	// Use batch size from config if available (via some context or adapter state)
 	// For now we assume a reasonable default or look at a.config if it had it.
 

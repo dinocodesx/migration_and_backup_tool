@@ -26,9 +26,9 @@ func (a *PostgresAdapter) Type() string {
 }
 
 func (a *PostgresAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s", 
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
-	
+
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("failed to connect to postgres: %w", err)

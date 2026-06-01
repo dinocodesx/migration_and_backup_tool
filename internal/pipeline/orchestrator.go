@@ -43,7 +43,7 @@ func (o *Orchestrator) Migrate(ctx context.Context, opID string, src adapter.Sou
 
 	// recordCh capacity: N * batchSize
 	recordCh := make(chan *record.Record, o.config.NumReaders*o.config.BatchSize)
-	
+
 	// batchCh capacity: W * 2
 	batchCh := make(chan []*record.Record, o.config.NumWriters*2)
 
@@ -56,7 +56,7 @@ func (o *Orchestrator) Migrate(ctx context.Context, opID string, src adapter.Sou
 			defer wgReaders.Done()
 			errCh := make(chan error, 1)
 			go src.ReadPartition(ctx, p, recordCh, errCh)
-			
+
 			select {
 			case err := <-errCh:
 				return err
@@ -93,13 +93,13 @@ func (o *Orchestrator) Migrate(ctx context.Context, opID string, src adapter.Sou
 						return nil
 					}
 					metrics.RecordsRead.WithLabelValues(table).Inc()
-					
+
 					// Apply transformation/mapping
 					mappedRec := rec
 					if o.mapper != nil {
 						mappedRec = o.mapper.MapRecord(rec)
 					}
-					
+
 					batch = append(batch, mappedRec)
 					if len(batch) >= o.config.BatchSize {
 						batchCh <- batch

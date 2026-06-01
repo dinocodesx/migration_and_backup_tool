@@ -18,7 +18,7 @@ type MockSourceAdapter struct {
 	err     error
 }
 
-func (m *MockSourceAdapter) Type() string                                            { return "mock" }
+func (m *MockSourceAdapter) Type() string                                           { return "mock" }
 func (m *MockSourceAdapter) Connect(ctx context.Context, cfg config.DBConfig) error { return nil }
 func (m *MockSourceAdapter) Close() error                                           { return nil }
 func (m *MockSourceAdapter) Schema(ctx context.Context, table string) (*schema.Schema, error) {

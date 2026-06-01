@@ -113,7 +113,7 @@ func (s *Store) SaveStatus(opID, partitionID string, status PartitionStatus) err
 
 		cp.Status = status
 		cp.UpdatedAt = time.Now()
-		
+
 		newData, err := json.Marshal(cp)
 		if err != nil {
 			return err
