@@ -1003,13 +1003,13 @@ masking:
 
 ### Phase 1 — PostgreSQL Adapter (Weeks 2–3)
 
-- [ ] `adapter/postgres/reader.go`: PK-range partitioner + cursor-based streaming.
-- [ ] `adapter/postgres/writer.go`: `COPY FROM` bulk writer.
-- [ ] `adapter/postgres/schema.go`: `information_schema` introspection.
-- [ ] `internal/pipeline/`: reader pool, transformer pool (identity), writer pool, batch assembler.
-- [ ] `gomigrate migrate` works for Postgres → Postgres (same DB, different table).
-- [ ] Integration test: 1M rows Postgres → Postgres.
-- [ ] Prometheus metrics endpoint live.
+- [x] `adapter/postgres/reader.go`: PK-range partitioner + cursor-based streaming.
+- [x] `adapter/postgres/writer.go`: `COPY FROM` bulk writer.
+- [x] `adapter/postgres/schema.go`: `information_schema` introspection.
+- [x] `internal/pipeline/`: reader pool, transformer pool (identity), writer pool, batch assembler.
+- [x] `gomigrate migrate` works for Postgres → Postgres (same DB, different table).
+- [x] Integration test: 1M rows Postgres → Postgres.
+- [x] Prometheus metrics endpoint live.
 
 **Deliverable:** Postgres-to-Postgres migration functional with checkpointing and metrics.
 
