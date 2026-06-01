@@ -46,7 +46,7 @@ func (e *Engine) Backup(ctx context.Context, opID string, src adapter.SourceAdap
 	manifest := &Manifest{
 		Version:        1,
 		OperationID:    opID,
-		Source:         SourceMetadata{Type: "postgres", Table: table}, // Simplified
+		Source:         SourceMetadata{Type: src.Type(), Table: table},
 		CreatedAt:      startTime,
 		ChunkSizeBytes: chunkSize,
 		SchemaSnapshot: *s,

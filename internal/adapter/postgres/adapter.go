@@ -21,6 +21,10 @@ func NewPostgresAdapter() *PostgresAdapter {
 	return &PostgresAdapter{}
 }
 
+func (a *PostgresAdapter) Type() string {
+	return "postgres"
+}
+
 func (a *PostgresAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s", 
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
