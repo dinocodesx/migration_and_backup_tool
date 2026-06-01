@@ -1,10 +1,10 @@
-# Migration and Backup Tool
+# gomigrate
 
 A high-performance, concurrent database migration and backup tool written in Go.
 
 ## Overview
 
-The Migration and Backup Tool is designed to handle large-scale database operations with high efficiency. It supports migrating data between different database engines, performing backups to multiple storage backends, and restoring data from those backups.
+gomigrate is designed to handle large-scale database operations with high efficiency. It supports migrating data between different database engines, performing backups to multiple storage backends, and restoring data from those backups.
 
 ## Key Features
 
@@ -37,8 +37,8 @@ The Migration and Backup Tool is designed to handle large-scale database operati
 ### Build from Source
 
 ```bash
-git clone https://github.com/dinocodesx/migration_and_backup_tool.git
-cd migration_and_backup_tool
+git clone https://github.com/dinocodesx/gomigrate.git
+cd gomigrate
 make build
 ```
 
@@ -51,6 +51,19 @@ Run the tool using a configuration file:
 ```bash
 ./gomigrate --config configs/example.yaml
 ```
+
+## Quick Demo (PostgreSQL Backup & Restore)
+
+We have provided a demo script that automates a full lifecycle: building the tool, seeding a PostgreSQL database with 1,000 records, performing a Parquet backup, verifying it, and then restoring it.
+
+**Requirements**: Docker and Go installed.
+
+```bash
+# Run the automated demo
+./demo/run_demo.sh
+```
+
+The script will output progress and confirm if the record counts match after restoration.
 
 ## Configuration
 

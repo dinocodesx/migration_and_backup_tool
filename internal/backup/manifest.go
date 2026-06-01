@@ -2,7 +2,7 @@ package backup
 
 import (
 	"time"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/schema"
+	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
 // Manifest represents the index of a completed backup.

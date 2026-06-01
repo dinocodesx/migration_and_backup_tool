@@ -3,9 +3,9 @@ package adapter
 import (
 	"context"
 
-	"github.com/dinocodesx/migration_and_backup_tool/internal/config"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/record"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/schema"
+	"github.com/dinocodesx/gomigrate/internal/config"
+	"github.com/dinocodesx/gomigrate/internal/record"
+	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
 // Partition represents a slice of a table or collection that can be read in parallel.

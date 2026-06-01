@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/dinocodesx/migration_and_backup_tool/internal/record"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/schema"
+	"github.com/dinocodesx/gomigrate/internal/record"
+	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
 func TestParquetSerializer(t *testing.T) {

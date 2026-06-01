@@ -10,9 +10,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/dinocodesx/migration_and_backup_tool/internal/adapter"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/record"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/storage"
+	"github.com/dinocodesx/gomigrate/internal/adapter"
+	"github.com/dinocodesx/gomigrate/internal/record"
+	"github.com/dinocodesx/gomigrate/internal/storage"
 )
 
 // Engine handles the backup workflow.

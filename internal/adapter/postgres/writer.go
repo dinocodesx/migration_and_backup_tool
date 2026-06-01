@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dinocodesx/migration_and_backup_tool/internal/record"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/schema"
+	"github.com/dinocodesx/gomigrate/internal/record"
+	"github.com/dinocodesx/gomigrate/internal/schema"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

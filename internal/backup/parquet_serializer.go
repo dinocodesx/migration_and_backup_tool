@@ -11,8 +11,8 @@ import (
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/record"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/schema"
+	"github.com/dinocodesx/gomigrate/internal/record"
+	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
 // ParquetSerializer implements the Serializer interface for Parquet format.
