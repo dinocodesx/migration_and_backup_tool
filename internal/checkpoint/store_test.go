@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,8 +53,17 @@ func TestStore(t *testing.T) {
 	if got.PartitionID != cp.PartitionID {
 		t.Errorf("expected PartitionID %s, got %s", cp.PartitionID, got.PartitionID)
 	}
-	// Note: bbolt might truncate time precision, so we might need to compare Unix timestamps
-	if got.LastCommitted.(float64) != float64(cp.LastCommitted.(int64)) {
-		t.Errorf("expected LastCommitted %v, got %v", cp.LastCommitted, got.LastCommitted)
+
+	// Verify precision is preserved via json.Number
+	num, ok := got.LastCommitted.(json.Number)
+	if !ok {
+		t.Fatalf("expected LastCommitted to be json.Number, got %T", got.LastCommitted)
+	}
+	val, err := num.Int64()
+	if err != nil {
+		t.Fatalf("failed to convert json.Number to int64: %v", err)
+	}
+	if val != cp.LastCommitted.(int64) {
+		t.Errorf("expected LastCommitted %v, got %v", cp.LastCommitted, val)
 	}
 }

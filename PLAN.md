@@ -27,6 +27,16 @@
 
 ## 1. Project Vision & Goals
 
+### Setup & Credentials
+
+Before running the tool or the development environment, ensure you have a `.env` file in the root directory. You can use `.env.example` as a template:
+
+```bash
+cp .env.example .env
+```
+
+The `docker-compose.yml` file and the application itself reference these variables. In production, it is recommended to use an external secret manager (e.g., HashiCorp Vault, AWS Secrets Manager) as described in the [Security](#13-security) section.
+
 ### Problem Statement
 
 A production server holds **~100 million user records** spread across one or more databases. The company needs:
@@ -951,7 +961,8 @@ masking:
 - [x] `internal/errs/retry.go` implemented and unit-tested.
 - [x] `internal/checkpoint/store.go` implemented and unit-tested.
 - [x] `Makefile` with `build`, `test`, `test-integration`, `lint` targets.
-- [x] `docker-compose.yml` with Postgres, MongoDB, Cassandra, Iceberg REST catalog.
+- [x] `docker-compose.yml` with Postgres, MongoDB, Cassandra, Iceberg REST catalog (using env vars).
+- [x] `.env.example` created and `.gitignore` updated for `.env`.
 
 **Deliverable:** `gomigrate --help` works; config loads; no actual DB connectivity yet.
 
