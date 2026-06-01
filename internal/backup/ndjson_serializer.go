@@ -3,7 +3,7 @@ package backup
 import (
 	"encoding/json"
 	"io"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/record"
+	"github.com/dinocodesx/gomigrate/internal/record"
 )
 
 // NDJSONSerializer implements the Serializer interface for Newline Delimited JSON.

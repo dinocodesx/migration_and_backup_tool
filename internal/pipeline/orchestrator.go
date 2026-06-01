@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dinocodesx/migration_and_backup_tool/internal/adapter"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/checkpoint"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/config"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/metrics"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/record"
+	"github.com/dinocodesx/gomigrate/internal/adapter"
+	"github.com/dinocodesx/gomigrate/internal/checkpoint"
+	"github.com/dinocodesx/gomigrate/internal/config"
+	"github.com/dinocodesx/gomigrate/internal/metrics"
+	"github.com/dinocodesx/gomigrate/internal/record"
 	"golang.org/x/sync/errgroup"
 )
 

@@ -2,7 +2,7 @@ package backup
 
 import (
 	"io"
-	"github.com/dinocodesx/migration_and_backup_tool/internal/record"
+	"github.com/dinocodesx/gomigrate/internal/record"
 )
 
 // Serializer defines the interface for converting records into a streamable format.
