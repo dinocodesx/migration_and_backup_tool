@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/dinocodesx/gomigrate/internal/adapter"
 	"github.com/dinocodesx/gomigrate/internal/adapter/factory"
 	"github.com/dinocodesx/gomigrate/internal/backup"
 	"github.com/dinocodesx/gomigrate/internal/checkpoint"
@@ -28,6 +29,7 @@ var (
 	cfgFile      string
 	manifestFile string
 	cfg          config.Config
+	logger       *zap.Logger
 )
 
 var rootCmd = &cobra.Command{
@@ -36,6 +38,13 @@ var rootCmd = &cobra.Command{
 	Short:   "A production-grade database migration and backup tool",
 	Long: `GoMigrate is a concurrent, resumable tool for migrating and backing up
 large-scale database workloads (100M+ records).`,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := viper.Unmarshal(&cfg); err != nil {
+			return fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+		logger = initLogger(cfg.Telemetry)
+		return nil
+	},
 }
 
 func Execute() {
@@ -111,248 +120,248 @@ func initSerializer(format string, s *schema.Schema, batchSize int) (backup.Seri
 
 // initLogger builds a zap logger from the telemetry config.
 func initLogger(tc config.TelemetryConfig) *zap.Logger {
-	logger, err := telemetry.NewLogger(tc.LogLevel, tc.LogFormat)
+	l, err := telemetry.NewLogger(tc.LogLevel, tc.LogFormat)
 	if err != nil {
 		// Fallback to a no-op logger; don't crash the tool.
 		return zap.NewNop()
 	}
-	return logger
+	return l
+}
+
+func initSourceAdapter(ctx context.Context) (adapter.SourceAdapter, error) {
+	src, err := factory.NewSourceAdapter(cfg.Source.Type)
+	if err != nil {
+		return nil, err
+	}
+	if err := src.Connect(ctx, cfg.Source); err != nil {
+		return nil, fmt.Errorf("source connect failed: %w", err)
+	}
+	return src, nil
+}
+
+func initTargetAdapter(ctx context.Context) (adapter.TargetAdapter, error) {
+	dst, err := factory.NewTargetAdapter(cfg.Target.Type)
+	if err != nil {
+		return nil, err
+	}
+	if err := dst.Connect(ctx, cfg.Target); err != nil {
+		return nil, fmt.Errorf("target connect failed: %w", err)
+	}
+	return dst, nil
 }
 
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Migrate data between databases",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := viper.Unmarshal(&cfg); err != nil {
-			return fmt.Errorf("failed to unmarshal config: %w", err)
-		}
+	RunE:  runMigrate,
+}
 
-		ctx := context.Background()
-		logger := initLogger(cfg.Telemetry)
-		defer logger.Sync() //nolint:errcheck
+func runMigrate(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	defer logger.Sync() //nolint:errcheck
 
-		// Initialize checkpoint store
-		cpPath := cfg.Checkpoint.Path
-		if cpPath == "" {
-			cpPath = "checkpoint.bolt"
-		}
-		store, err := checkpoint.NewStore(cpPath)
-		if err != nil {
-			return err
-		}
-		defer store.Close()
+	// Initialize checkpoint store
+	cpPath := cfg.Checkpoint.Path
+	if cpPath == "" {
+		cpPath = "checkpoint.bolt"
+	}
+	store, err := checkpoint.NewStore(cpPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
 
-		src, err := factory.NewSourceAdapter(cfg.Source.Type)
-		if err != nil {
-			return err
-		}
-		if err := src.Connect(ctx, cfg.Source); err != nil {
-			return fmt.Errorf("source connect failed: %w", err)
-		}
-		defer src.Close()
+	src, err := initSourceAdapter(ctx)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
 
-		dst, err := factory.NewTargetAdapter(cfg.Target.Type)
-		if err != nil {
-			return err
-		}
-		if err := dst.Connect(ctx, cfg.Target); err != nil {
-			return fmt.Errorf("target connect failed: %w", err)
-		}
-		defer dst.Close()
+	dst, err := initTargetAdapter(ctx)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
 
-		// For Phase 1, we assume we're migrating the first table in the list
-		if len(cfg.Source.Tables) == 0 {
-			return fmt.Errorf("no tables specified in source config")
-		}
-		table := cfg.Source.Tables[0]
+	// For Phase 1, we assume we're migrating the first table in the list
+	if len(cfg.Source.Tables) == 0 {
+		return fmt.Errorf("no tables specified in source config")
+	}
+	table := cfg.Source.Tables[0]
 
-		// Apply schema to target
-		s, err := src.Schema(ctx, table)
-		if err != nil {
-			return fmt.Errorf("failed to get source schema: %w", err)
-		}
-		if err := dst.ApplySchema(ctx, s); err != nil {
-			return fmt.Errorf("failed to apply schema to target: %w", err)
-		}
+	// Apply schema to target
+	s, err := src.Schema(ctx, table)
+	if err != nil {
+		return fmt.Errorf("failed to get source schema: %w", err)
+	}
+	if err := dst.ApplySchema(ctx, s); err != nil {
+		return fmt.Errorf("failed to apply schema to target: %w", err)
+	}
 
-		// Initialize mapper
-		mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
+	// Initialize mapper
+	mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
 
-		orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, logger)
+	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, logger)
 
-		// Start metrics server
-		if cfg.Telemetry.MetricsAddr != "" {
-			go func() {
-				if err := metrics.StartMetricsServer(cfg.Telemetry.MetricsAddr); err != nil {
-					logger.Warn("metrics server failed", zap.Error(err))
-				}
-			}()
-			logger.Info("metrics server started", zap.String("addr", cfg.Telemetry.MetricsAddr))
-		}
+	// Start metrics server
+	if cfg.Telemetry.MetricsAddr != "" {
+		go func() {
+			if err := metrics.StartMetricsServer(cfg.Telemetry.MetricsAddr); err != nil {
+				logger.Warn("metrics server failed", zap.Error(err))
+			}
+		}()
+		logger.Info("metrics server started", zap.String("addr", cfg.Telemetry.MetricsAddr))
+	}
 
-		opID := fmt.Sprintf("mig-%d", os.Getpid())
-		logger.Info("starting migration",
-			zap.String("table", table),
-			zap.String("operation_id", opID),
-		)
+	opID := fmt.Sprintf("mig-%d", os.Getpid())
+	logger.Info("starting migration",
+		zap.String("table", table),
+		zap.String("operation_id", opID),
+	)
 
-		if err := orch.Migrate(ctx, opID, src, dst, table); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
-		}
+	if err := orch.Migrate(ctx, opID, src, dst, table); err != nil {
+		return fmt.Errorf("migration failed: %w", err)
+	}
 
-		logger.Info("migration completed successfully")
-		return nil
-	},
+	logger.Info("migration completed successfully")
+	return nil
 }
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
 	Short: "Backup database to storage",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := viper.Unmarshal(&cfg); err != nil {
-			return fmt.Errorf("failed to unmarshal config: %w", err)
-		}
+	RunE:  runBackup,
+}
 
-		ctx := context.Background()
-		logger := initLogger(cfg.Telemetry)
-		defer logger.Sync() //nolint:errcheck
+func runBackup(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	defer logger.Sync() //nolint:errcheck
 
-		src, err := factory.NewSourceAdapter(cfg.Source.Type)
-		if err != nil {
-			return err
-		}
-		if err := src.Connect(ctx, cfg.Source); err != nil {
-			return fmt.Errorf("source connect failed: %w", err)
-		}
-		defer src.Close()
+	src, err := initSourceAdapter(ctx)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
 
-		st, err := initStorage(ctx, cfg.Backup.Storage)
-		if err != nil {
-			return err
-		}
+	st, err := initStorage(ctx, cfg.Backup.Storage)
+	if err != nil {
+		return err
+	}
 
-		if len(cfg.Source.Tables) == 0 {
-			return fmt.Errorf("no tables specified in source config")
-		}
-		table := cfg.Source.Tables[0]
+	if len(cfg.Source.Tables) == 0 {
+		return fmt.Errorf("no tables specified in source config")
+	}
+	table := cfg.Source.Tables[0]
 
-		s, err := src.Schema(ctx, table)
-		if err != nil {
-			return fmt.Errorf("failed to get source schema: %w", err)
-		}
+	s, err := src.Schema(ctx, table)
+	if err != nil {
+		return fmt.Errorf("failed to get source schema: %w", err)
+	}
 
-		batchSize := cfg.Concurrency.BatchSize
-		if batchSize <= 0 {
-			batchSize = 1000
-		}
-		ser, err := initSerializer(cfg.Backup.Format, s, batchSize)
-		if err != nil {
-			return err
-		}
+	batchSize := cfg.Concurrency.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	ser, err := initSerializer(cfg.Backup.Format, s, batchSize)
+	if err != nil {
+		return err
+	}
 
-		numReaders := cfg.Concurrency.NumReaders
-		engine := backup.NewEngine(st, ser, logger, numReaders)
-		opID := fmt.Sprintf("bak-%d", os.Getpid())
-		logger.Info("starting backup", zap.String("table", table), zap.String("operation_id", opID))
+	numReaders := cfg.Concurrency.NumReaders
+	engine := backup.NewEngine(st, ser, logger, numReaders)
+	opID := fmt.Sprintf("bak-%d", os.Getpid())
+	logger.Info("starting backup", zap.String("table", table), zap.String("operation_id", opID))
 
-		chunkSize := int64(cfg.Backup.ChunkSizeMB) * 1024 * 1024
+	chunkSize := int64(cfg.Backup.ChunkSizeMB) * 1024 * 1024
 
-		manifest, err := engine.Backup(ctx, opID, src, table, chunkSize)
-		if err != nil {
-			return fmt.Errorf("backup failed: %w", err)
-		}
+	manifest, err := engine.Backup(ctx, opID, src, table, chunkSize)
+	if err != nil {
+		return fmt.Errorf("backup failed: %w", err)
+	}
 
-		logger.Info("backup completed",
-			zap.Int64("row_count", manifest.RowCount),
-			zap.Int("chunks", len(manifest.Chunks)),
-		)
-		return nil
-	},
+	logger.Info("backup completed",
+		zap.Int64("row_count", manifest.RowCount),
+		zap.Int("chunks", len(manifest.Chunks)),
+	)
+	return nil
 }
 
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "Restore database from backup",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := viper.Unmarshal(&cfg); err != nil {
-			return fmt.Errorf("failed to unmarshal config: %w", err)
-		}
+	RunE:  runRestore,
+}
 
-		ctx := context.Background()
-		logger := initLogger(cfg.Telemetry)
-		defer logger.Sync() //nolint:errcheck
+func runRestore(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	defer logger.Sync() //nolint:errcheck
 
-		dst, err := factory.NewTargetAdapter(cfg.Target.Type)
-		if err != nil {
-			return err
-		}
-		if err := dst.Connect(ctx, cfg.Target); err != nil {
-			return fmt.Errorf("target connect failed: %w", err)
-		}
-		defer dst.Close()
+	dst, err := initTargetAdapter(ctx)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
 
-		st, err := initStorage(ctx, cfg.Backup.Storage)
-		if err != nil {
-			return err
-		}
+	st, err := initStorage(ctx, cfg.Backup.Storage)
+	if err != nil {
+		return err
+	}
 
-		engine := backup.NewRestoreEngine(st, dst, logger)
-		logger.Info("starting restore", zap.String("manifest", manifestFile))
+	engine := backup.NewRestoreEngine(st, dst, logger)
+	logger.Info("starting restore", zap.String("manifest", manifestFile))
 
-		if err := engine.Restore(ctx, manifestFile); err != nil {
-			return fmt.Errorf("restore failed: %w", err)
-		}
+	if err := engine.Restore(ctx, manifestFile); err != nil {
+		return fmt.Errorf("restore failed: %w", err)
+	}
 
-		logger.Info("restore completed successfully")
-		return nil
-	},
+	logger.Info("restore completed successfully")
+	return nil
 }
 
 var verifyCmd = &cobra.Command{
 	Use:   "verify",
 	Short: "Verify backup integrity",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := viper.Unmarshal(&cfg); err != nil {
-			return fmt.Errorf("failed to unmarshal config: %w", err)
-		}
+	RunE:  runVerify,
+}
 
-		ctx := context.Background()
-		st, err := initStorage(ctx, cfg.Backup.Storage)
+func runVerify(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+
+	st, err := initStorage(ctx, cfg.Backup.Storage)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Verifying backup at %s...\n", manifestFile)
+	reader, err := st.Get(ctx, manifestFile)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	var manifest backup.Manifest
+	if err := json.NewDecoder(reader).Decode(&manifest); err != nil {
+		return err
+	}
+
+	fmt.Printf("Manifest valid. Backup created at: %s, Rows: %d, Chunks: %d\n",
+		manifest.CreatedAt.Format(time.RFC3339), manifest.RowCount, len(manifest.Chunks))
+
+	for _, chunk := range manifest.Chunks {
+		fmt.Printf("  Checking chunk %d (%s)... ", chunk.Index, chunk.File)
+		exists, err := st.Exists(ctx, chunk.File)
 		if err != nil {
-			return err
+			fmt.Printf("ERROR: %v\n", err)
+			continue
 		}
-
-		fmt.Printf("Verifying backup at %s...\n", manifestFile)
-		reader, err := st.Get(ctx, manifestFile)
-		if err != nil {
-			return err
+		if !exists {
+			fmt.Println("MISSING")
+			continue
 		}
-		defer reader.Close()
+		fmt.Println("OK")
+	}
 
-		var manifest backup.Manifest
-		if err := json.NewDecoder(reader).Decode(&manifest); err != nil {
-			return err
-		}
-
-		fmt.Printf("Manifest valid. Backup created at: %s, Rows: %d, Chunks: %d\n",
-			manifest.CreatedAt.Format(time.RFC3339), manifest.RowCount, len(manifest.Chunks))
-
-		for _, chunk := range manifest.Chunks {
-			fmt.Printf("  Checking chunk %d (%s)... ", chunk.Index, chunk.File)
-			exists, err := st.Exists(ctx, chunk.File)
-			if err != nil {
-				fmt.Printf("ERROR: %v\n", err)
-				continue
-			}
-			if !exists {
-				fmt.Println("MISSING")
-				continue
-			}
-			fmt.Println("OK")
-		}
-
-		return nil
-	},
+	return nil
 }
 
 var statusCmd = &cobra.Command{
