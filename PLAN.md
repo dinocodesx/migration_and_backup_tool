@@ -41,6 +41,7 @@ A production server holds **~100 million user records** spread across one or mor
 | Role            | Database         | Protocol / Driver                              |
 | --------------- | ---------------- | ---------------------------------------------- |
 | Source & Target | PostgreSQL       | `pgx/v5`                                       |
+| Source & Target | MySQL            | `go-sql-driver/mysql`                          |
 | Source & Target | MongoDB          | `mongo-driver`                                 |
 | Source & Target | Apache Cassandra | `gocql`                                        |
 | Source & Target | Apache Iceberg   | REST Catalog API + Parquet (`apache/arrow-go`) |
@@ -82,7 +83,7 @@ A production server holds **~100 million user records** spread across one or mor
              │              │              │
     ┌────────▼──────────────▼──────────────▼────────┐
     │               Adapter Layer                   │
-    │  PostgresAdapter | MongoAdapter               │
+    │  PostgresAdapter | MySQLAdapter | MongoAdapter│
     │  CassandraAdapter | IcebergAdapter            │
     └────────────────────────────────────────────────┘
              │                            │
@@ -142,6 +143,10 @@ gomigrate/
 │   │   ├── postgres/
 │   │   │   ├── reader.go            # Cursor-based parallel read
 │   │   │   ├── writer.go            # COPY protocol bulk writer
+│   │   │   └── schema.go            # Schema introspection
+│   │   ├── mysql/
+│   │   │   ├── reader.go            # Range-based parallel read
+│   │   │   ├── writer.go            # LOAD DATA or Bulk Insert
 │   │   │   └── schema.go            # Schema introspection
 │   │   ├── mongo/
 │   │   │   ├── reader.go            # Parallel collection scan
@@ -298,6 +303,7 @@ type TargetAdapter interface {
 | DB         | Partition Strategy                                  |
 | ---------- | --------------------------------------------------- |
 | PostgreSQL | `ctid` range scan OR integer PK range split         |
+| MySQL      | Integer PK range split (auto-incrementing PK)       |
 | MongoDB    | `_id` ObjectID range split (or `$sample`-based)     |
 | Cassandra  | Native token range splits (via `system.local`/ring) |
 | Iceberg    | File-level splits (one goroutine per Parquet file)  |
@@ -465,6 +471,32 @@ Signal handler (`SIGINT` / `SIGTERM`) triggers:
 - Iceberg `struct` → `map[string]any`
 - Iceberg `list` → `[]any`
 - Iceberg `map` → `map[string]any`
+
+### 6.5 MySQL Adapter
+
+**Reading:**
+
+- Use `go-sql-driver/mysql` connection pool.
+- Introspect `information_schema` for schema details.
+- Partition via `WHERE id >= ? AND id < ?` on auto-incrementing primary key.
+- Use `Streaming` results (via `sql.Rows`) to handle large result sets without OOM.
+- For high-performance reads, use `SELECT ... INTO OUTFILE` for backups (if local access available).
+
+**Writing:**
+
+- Use `LOAD DATA LOCAL INFILE` for high-speed bulk inserts.
+- Fallback to multi-row `INSERT INTO ... VALUES (...), (...), ...` for smaller batches or restricted environments.
+- Use `INSERT ... ON DUPLICATE KEY UPDATE` for idempotent migrations.
+- Wrap batches in transactions for atomicity.
+
+**Schema Mapping:**
+
+- `int` / `bigint` → `int64`
+- `varchar` / `text` / `longtext` → `string`
+- `datetime` / `timestamp` → `time.Time`
+- `json` → `map[string]any`
+- `decimal` → `float64` (or custom decimal type if precision is critical)
+- `enum` → `string`
 
 ---
 
@@ -1023,6 +1055,18 @@ masking:
 
 ---
 
+### Phase 8 — MySQL Support (Weeks 14–15)
+
+- [ ] `adapter/mysql/reader.go`: Integer PK-range partitioner + streaming.
+- [ ] `adapter/mysql/writer.go`: `LOAD DATA LOCAL INFILE` bulk writer.
+- [ ] `adapter/mysql/schema.go`: `information_schema` introspection.
+- [ ] Integration tests for MySQL ↔ Postgres, MySQL ↔ Mongo.
+- [ ] Backup/restore support for MySQL.
+
+**Deliverable:** MySQL fully supported as source and target.
+
+---
+
 ## 16. Open Questions & Risk Register
 
 | #   | Question / Risk                                                      | Impact | Mitigation                                                                          |
@@ -1037,6 +1081,7 @@ masking:
 | 8   | Network cost of reading 100M rows from cloud DB                      | High   | Run tool co-located with source DB; use VPC endpoints                               |
 | 9   | Large BLOBs / binary columns                                         | Medium | Configurable `max_blob_size_mb`; skip or stream large objects separately            |
 | 10  | Schema migration on live target (zero-downtime)                      | High   | Phase 2 work: dual-write + cutover strategy (out of scope for v1)                   |
+| 11  | MySQL `LOAD DATA LOCAL INFILE` restricted by server                 | Medium | Provide multi-row `INSERT` fallback; document server-side `local_infile` requirement |
 
 ---
 
