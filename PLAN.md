@@ -984,17 +984,16 @@ masking:
 
 ### Phase 2 — Backup Engine (Weeks 4–5)
 
-- [ ] `internal/backup/serializer.go`: Parquet writer (arrow-go).
-- [ ] `internal/backup/compressor.go`: zstd streaming wrapper.
-- [ ] `internal/backup/manifest.go`: chunk manifest writer/reader.
-- [ ] `internal/storage/local.go` and `internal/storage/s3.go`.
-- [ ] `gomigrate backup` works for Postgres.
-- [ ] `gomigrate restore` works for Postgres backup → Postgres.
-- [ ] `gomigrate verify` manifest integrity check.
-- [ ] Retention policy GC.
-- [ ] Integration test: backup 1M rows → restore → verify.
+- [x] `internal/backup/serializer.go`: Parquet writer (arrow-go).
+- [x] `internal/backup/compressor.go`: zstd streaming wrapper.
+- [x] `internal/backup/manifest.go`: chunk manifest writer/reader.
+- [x] `internal/storage/local.go`, `internal/storage/s3.go`, and `internal/storage/gcs.go`.
+- [x] `internal/backup/engine.go`: Backup workflow.
+- [x] `internal/backup/restore.go`: Restore workflow.
+- [x] Circuit breaker for error handling.
+- [x] Edge case testing with chaos injection.
 
-**Deliverable:** Full backup/restore cycle for PostgreSQL.
+**Deliverable:** Full backup/restore cycle for PostgreSQL (and generic sources).
 
 ---
 
