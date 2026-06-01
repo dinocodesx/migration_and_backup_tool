@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/dinocodesx/gomigrate/internal/adapter"
 	"github.com/dinocodesx/gomigrate/internal/record"
@@ -12,68 +13,59 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Partitions splits the source collection into N partitions using splitVector.
+// Partitions splits the source collection into n partitions using MongoDB's
+// splitVector admin command. Falls back to a min/max _id range split when
+// splitVector is unavailable (e.g. on Atlas or non-admin connections).
 func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	if n <= 1 {
 		return []adapter.Partition{{ID: "p0", Table: table}}, nil
 	}
 
 	db := a.client.Database(a.config.Database)
-
-	// splitVector is an admin command. We need to run it against the admin database
-	// but specifying the full namespace of the collection.
 	namespace := fmt.Sprintf("%s.%s", a.config.Database, table)
 
-	// Get collection stats to estimate chunk size
+	// Get collection stats to estimate per-chunk size.
 	statsResult := db.RunCommand(ctx, bson.D{{Key: "collStats", Value: table}})
 	var stats struct {
 		Size  int64 `bson:"size"`
 		Count int64 `bson:"count"`
 	}
-	if err := statsResult.Decode(&stats); err != nil {
-		// If collStats fails, fallback to simple range interpolation or single partition
+	if err := statsResult.Decode(&stats); err != nil || stats.Count == 0 {
+		// Collection is empty or collStats unavailable — single partition.
 		return []adapter.Partition{{ID: "p0", Table: table}}, nil
 	}
 
-	if stats.Count == 0 {
-		return []adapter.Partition{{ID: "p0", Table: table}}, nil
-	}
-
-	// Calculate maxChunkSize in MB. splitVector expects this.
-	// We want roughly n partitions.
+	// Calculate maxChunkSize in MB for splitVector.
 	avgDocSize := float64(stats.Size) / float64(stats.Count)
 	docsPerPartition := float64(stats.Count) / float64(n)
-	maxChunkSizeMB := (docsPerPartition * avgDocSize) / (1024 * 1024)
+	maxChunkSizeMB := math.Max(1, (docsPerPartition*avgDocSize)/(1024*1024))
 
-	// Clamp maxChunkSizeMB to at least 1MB
-	if maxChunkSizeMB < 1 {
-		maxChunkSizeMB = 1
-	}
-
-	// splitVector command
 	cmd := bson.D{
 		{Key: "splitVector", Value: namespace},
 		{Key: "keyPattern", Value: bson.D{{Key: "_id", Value: 1}}},
 		{Key: "maxChunkSize", Value: int64(math.Ceil(maxChunkSizeMB))},
 	}
 
-	var result struct {
+	var splitResult struct {
 		SplitKeys []bson.M `bson:"splitKeys"`
 		OK        int      `bson:"ok"`
 	}
 
-	// splitVector must be run on the admin database in some versions/deployments
 	adminDB := a.client.Database("admin")
-	err := adminDB.RunCommand(ctx, cmd).Decode(&result)
-	if err != nil || result.OK != 1 {
-		// Fallback to min/max interpolation if splitVector is not available (e.g., non-admin, Atlas)
+	err := adminDB.RunCommand(ctx, cmd).Decode(&splitResult)
+	if err != nil || splitResult.OK != 1 {
+		// splitVector not available (Atlas, non-admin) — use min/max fallback.
 		return a.fallbackPartitions(ctx, table, n)
 	}
 
-	partitions := make([]adapter.Partition, 0, len(result.SplitKeys)+1)
+	if len(splitResult.SplitKeys) == 0 {
+		return []adapter.Partition{{ID: "p0", Table: table}}, nil
+	}
+
+	partitions := make([]adapter.Partition, 0, len(splitResult.SplitKeys)+1)
 	var lastKey any
 
-	for i, sk := range result.SplitKeys {
+	for i, sk := range splitResult.SplitKeys {
 		key := sk["_id"]
 		partitions = append(partitions, adapter.Partition{
 			ID:    fmt.Sprintf("p%d", i),
@@ -83,8 +75,7 @@ func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]a
 		})
 		lastKey = key
 	}
-
-	// Final partition
+	// Final open-ended partition.
 	partitions = append(partitions, adapter.Partition{
 		ID:    fmt.Sprintf("p%d", len(partitions)),
 		Table: table,
@@ -95,15 +86,72 @@ func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]a
 	return partitions, nil
 }
 
-// fallbackPartitions uses min/max _id interpolation as a backup strategy.
+// fallbackPartitions creates n partitions by sampling boundary ObjectIDs using
+// $sample. This works on Atlas and any deployment without splitVector access.
 func (a *MongoAdapter) fallbackPartitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
-	// For simplicity in this implementation, if splitVector fails, we return a single partition
-	// but in a production environment, we'd interpolate based on min/max _id.
-	return []adapter.Partition{{ID: "p0", Table: table}}, nil
+	coll := a.client.Database(a.config.Database).Collection(table)
+
+	// Sample n-1 boundary documents to get n roughly equal ranges.
+	sampleSize := n - 1
+	if sampleSize <= 0 {
+		return []adapter.Partition{{ID: "p0", Table: table}}, nil
+	}
+
+	pipeline := bson.A{
+		bson.D{{Key: "$sample", Value: bson.D{{Key: "size", Value: sampleSize}}}},
+		bson.D{{Key: "$project", Value: bson.D{{Key: "_id", Value: 1}}}},
+		bson.D{{Key: "$sort", Value: bson.D{{Key: "_id", Value: 1}}}},
+	}
+
+	cursor, err := coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		// If aggregation fails, return a single partition as a safe fallback.
+		return []adapter.Partition{{ID: "p0", Table: table}}, nil
+	}
+	defer cursor.Close(ctx)
+
+	var boundaries []any
+	for cursor.Next(ctx) {
+		var doc bson.M
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+		if id, ok := doc["_id"]; ok {
+			boundaries = append(boundaries, id)
+		}
+	}
+
+	if len(boundaries) == 0 {
+		return []adapter.Partition{{ID: "p0", Table: table}}, nil
+	}
+
+	partitions := make([]adapter.Partition, 0, len(boundaries)+1)
+	var lastKey any
+	for i, key := range boundaries {
+		partitions = append(partitions, adapter.Partition{
+			ID:    fmt.Sprintf("p%d", i),
+			Table: table,
+			Start: lastKey,
+			End:   key,
+		})
+		lastKey = key
+	}
+	partitions = append(partitions, adapter.Partition{
+		ID:    fmt.Sprintf("p%d", len(partitions)),
+		Table: table,
+		Start: lastKey,
+		End:   nil,
+	})
+
+	return partitions, nil
 }
 
-// ReadPartition streams records from a single partition into ch.
-func (a *MongoAdapter) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record, errCh chan<- error) {
+// ReadPartition streams all records from a single partition onto ch and then
+// closes ch. It honours ctx cancellation and returns a non-nil error on any
+// fatal read failure.
+func (a *MongoAdapter) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
+	defer close(ch)
+
 	coll := a.client.Database(a.config.Database).Collection(p.Table)
 
 	filter := bson.M{}
@@ -115,55 +163,58 @@ func (a *MongoAdapter) ReadPartition(ctx context.Context, p adapter.Partition, c
 		filter["_id"] = bson.M{"$lt": p.End}
 	}
 
-	opts := options.Find().SetSort(bson.D{{Key: "_id", Value: 1}})
-
-	// Use batch size from config if available (via some context or adapter state)
-	// For now we assume a reasonable default or look at a.config if it had it.
+	opts := options.Find().
+		SetSort(bson.D{{Key: "_id", Value: 1}}).
+		SetBatchSize(1000)
 
 	cursor, err := coll.Find(ctx, filter, opts)
 	if err != nil {
-		errCh <- fmt.Errorf("failed to execute find in partition %s: %w", p.ID, err)
-		return
+		return fmt.Errorf("failed to execute find in partition %s: %w", p.ID, err)
 	}
 	defer cursor.Close(ctx)
 
 	for cursor.Next(ctx) {
-		var doc bson.M
-		if err := cursor.Decode(&doc); err != nil {
-			errCh <- fmt.Errorf("failed to decode document in partition %s: %w", p.ID, err)
-			return
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
-		// Convert _id to string for Record.ID
+		var doc bson.M
+		if err := cursor.Decode(&doc); err != nil {
+			return fmt.Errorf("failed to decode document in partition %s: %w", p.ID, err)
+		}
+
+		// Convert _id to string for Record.ID.
 		var id string
-		if oid, ok := doc["_id"]; ok {
-			switch v := oid.(type) {
-			case primitive.ObjectID:
-				id = v.Hex()
-			default:
-				id = fmt.Sprintf("%v", v)
-			}
+		rawID := doc["_id"]
+		switch v := rawID.(type) {
+		case primitive.ObjectID:
+			id = v.Hex()
+		default:
+			id = fmt.Sprintf("%v", v)
 		}
 
 		rec := &record.Record{
 			ID:   id,
 			Data: doc,
 			Metadata: record.RecordMetadata{
-				SourceTable: p.Table,
-				SourceDB:    a.config.Database,
-				PartitionID: p.ID,
-				Offset:      doc["_id"],
+				SourceTable:   p.Table,
+				SourceDB:      a.config.Database,
+				PartitionID:   p.ID,
+				Offset:        rawID,
+				IngestionTime: time.Now(),
 			},
 		}
 
 		select {
-		case <-ctx.Done():
-			return
 		case ch <- rec:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 
 	if err := cursor.Err(); err != nil {
-		errCh <- fmt.Errorf("cursor error in partition %s: %w", p.ID, err)
+		return fmt.Errorf("cursor error in partition %s: %w", p.ID, err)
 	}
+
+	return nil
 }

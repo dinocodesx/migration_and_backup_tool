@@ -30,12 +30,13 @@ type DBConfig struct {
 
 // ConcurrencyConfig defines the worker pool parameters.
 type ConcurrencyConfig struct {
-	NumReaders      int           `yaml:"num_readers"`
-	NumTransformers int           `yaml:"num_transformers"`
-	NumWriters      int           `yaml:"num_writers"`
-	BatchSize       int           `yaml:"batch_size"`
-	BatchTimeout    time.Duration `yaml:"batch_timeout"`
-	RateLimitRPS    int           `yaml:"rate_limit_rps"`
+	NumReaders          int           `yaml:"num_readers"`
+	NumTransformers     int           `yaml:"num_transformers"`
+	NumWriters          int           `yaml:"num_writers"`
+	BatchSize           int           `yaml:"batch_size"`
+	BatchTimeout        time.Duration `yaml:"batch_timeout"`
+	RateLimitRPS        int           `yaml:"rate_limit_rps"`
+	FlushEveryNBatches  int           `yaml:"flush_every_n_batches"` // Checkpoint flush frequency
 }
 
 // MigrationConfig defines migration-specific settings.

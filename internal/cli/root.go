@@ -16,8 +16,10 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/pipeline"
 	"github.com/dinocodesx/gomigrate/internal/schema"
 	"github.com/dinocodesx/gomigrate/internal/storage"
+	"github.com/dinocodesx/gomigrate/internal/telemetry"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
 )
 
 const Version = "v0.0.1-alpha"
@@ -96,15 +98,25 @@ func initStorage(ctx context.Context, sc config.StorageConfig) (storage.Storage,
 	}
 }
 
-func initSerializer(format string, s *schema.Schema) (backup.Serializer, error) {
+func initSerializer(format string, s *schema.Schema, batchSize int) (backup.Serializer, error) {
 	switch format {
 	case "parquet":
-		return backup.NewParquetSerializer(s)
-	case "ndjson":
+		return backup.NewParquetSerializer(s, batchSize)
+	case "ndjson", "":
 		return backup.NewNDJSONSerializer(), nil
 	default:
 		return nil, fmt.Errorf("unsupported backup format: %s", format)
 	}
+}
+
+// initLogger builds a zap logger from the telemetry config.
+func initLogger(tc config.TelemetryConfig) *zap.Logger {
+	logger, err := telemetry.NewLogger(tc.LogLevel, tc.LogFormat)
+	if err != nil {
+		// Fallback to a no-op logger; don't crash the tool.
+		return zap.NewNop()
+	}
+	return logger
 }
 
 var migrateCmd = &cobra.Command{
@@ -116,6 +128,8 @@ var migrateCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
+		logger := initLogger(cfg.Telemetry)
+		defer logger.Sync() //nolint:errcheck
 
 		// Initialize checkpoint store
 		cpPath := cfg.Checkpoint.Path
@@ -164,26 +178,29 @@ var migrateCmd = &cobra.Command{
 		// Initialize mapper
 		mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
 
-		orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper)
+		orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, logger)
 
 		// Start metrics server
 		if cfg.Telemetry.MetricsAddr != "" {
 			go func() {
 				if err := metrics.StartMetricsServer(cfg.Telemetry.MetricsAddr); err != nil {
-					fmt.Printf("Warning: metrics server failed: %v\n", err)
+					logger.Warn("metrics server failed", zap.Error(err))
 				}
 			}()
-			fmt.Printf("Metrics server started at %s\n", cfg.Telemetry.MetricsAddr)
+			logger.Info("metrics server started", zap.String("addr", cfg.Telemetry.MetricsAddr))
 		}
 
 		opID := fmt.Sprintf("mig-%d", os.Getpid())
-		fmt.Printf("Starting migration of table %s (OpID: %s)...\n", table, opID)
+		logger.Info("starting migration",
+			zap.String("table", table),
+			zap.String("operation_id", opID),
+		)
 
 		if err := orch.Migrate(ctx, opID, src, dst, table); err != nil {
 			return fmt.Errorf("migration failed: %w", err)
 		}
 
-		fmt.Println("Migration completed successfully!")
+		logger.Info("migration completed successfully")
 		return nil
 	},
 }
@@ -197,6 +214,8 @@ var backupCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
+		logger := initLogger(cfg.Telemetry)
+		defer logger.Sync() //nolint:errcheck
 
 		src, err := factory.NewSourceAdapter(cfg.Source.Type)
 		if err != nil {
@@ -222,26 +241,31 @@ var backupCmd = &cobra.Command{
 			return fmt.Errorf("failed to get source schema: %w", err)
 		}
 
-		ser, err := initSerializer(cfg.Backup.Format, s)
+		batchSize := cfg.Concurrency.BatchSize
+		if batchSize <= 0 {
+			batchSize = 1000
+		}
+		ser, err := initSerializer(cfg.Backup.Format, s, batchSize)
 		if err != nil {
 			return err
 		}
 
-		engine := backup.NewEngine(st, ser)
+		numReaders := cfg.Concurrency.NumReaders
+		engine := backup.NewEngine(st, ser, logger, numReaders)
 		opID := fmt.Sprintf("bak-%d", os.Getpid())
-		fmt.Printf("Starting backup of table %s (OpID: %s)...\n", table, opID)
+		logger.Info("starting backup", zap.String("table", table), zap.String("operation_id", opID))
 
 		chunkSize := int64(cfg.Backup.ChunkSizeMB) * 1024 * 1024
-		if chunkSize == 0 {
-			chunkSize = 512 * 1024 * 1024 // Default 512MB
-		}
 
 		manifest, err := engine.Backup(ctx, opID, src, table, chunkSize)
 		if err != nil {
 			return fmt.Errorf("backup failed: %w", err)
 		}
 
-		fmt.Printf("Backup completed successfully! Row count: %d, Chunks: %d\n", manifest.RowCount, len(manifest.Chunks))
+		logger.Info("backup completed",
+			zap.Int64("row_count", manifest.RowCount),
+			zap.Int("chunks", len(manifest.Chunks)),
+		)
 		return nil
 	},
 }
@@ -255,6 +279,8 @@ var restoreCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
+		logger := initLogger(cfg.Telemetry)
+		defer logger.Sync() //nolint:errcheck
 
 		dst, err := factory.NewTargetAdapter(cfg.Target.Type)
 		if err != nil {
@@ -270,14 +296,14 @@ var restoreCmd = &cobra.Command{
 			return err
 		}
 
-		engine := backup.NewRestoreEngine(st, dst)
-		fmt.Printf("Starting restore from %s...\n", manifestFile)
+		engine := backup.NewRestoreEngine(st, dst, logger)
+		logger.Info("starting restore", zap.String("manifest", manifestFile))
 
 		if err := engine.Restore(ctx, manifestFile); err != nil {
 			return fmt.Errorf("restore failed: %w", err)
 		}
 
-		fmt.Println("Restore completed successfully!")
+		logger.Info("restore completed successfully")
 		return nil
 	},
 }

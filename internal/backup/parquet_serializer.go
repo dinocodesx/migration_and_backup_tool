@@ -3,7 +3,6 @@ package backup
 import (
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -15,57 +14,87 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
-// ParquetSerializer implements the Serializer interface for Parquet format.
+// ParquetSerializer implements Serializer for Apache Parquet format.
+//
+// Records are buffered in-memory and flushed as row groups when batchSize is
+// reached. Call Close() to flush the final (possibly partial) row group and
+// write the Parquet footer.
 type ParquetSerializer struct {
 	schema      *schema.Schema
 	arrowSchema *arrow.Schema
 	pool        memory.Allocator
-	rows        []*record.Record
-	writer      *pqarrow.FileWriter
 	batchSize   int
+
+	// writer is bound by Open(); it is nil until Open is called.
+	writer *pqarrow.FileWriter
+	rows   []*record.Record
 }
 
-// NewParquetSerializer creates a new ParquetSerializer for the given schema.
-func NewParquetSerializer(s *schema.Schema) (*ParquetSerializer, error) {
+// NewParquetSerializer creates a ParquetSerializer for the given schema.
+func NewParquetSerializer(s *schema.Schema, batchSize int) (*ParquetSerializer, error) {
 	arrowSchema, err := convertToArrowSchema(s)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to convert schema to Arrow: %w", err)
 	}
-
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
 	return &ParquetSerializer{
 		schema:      s,
 		arrowSchema: arrowSchema,
 		pool:        memory.NewGoAllocator(),
-		batchSize:   1000, // Default batch size for flushing
+		batchSize:   batchSize,
 	}, nil
 }
 
-func (s *ParquetSerializer) Serialize(w io.Writer, rec *record.Record) error {
-	if s.writer == nil {
-		writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Zstd))
-		arrowProps := pqarrow.DefaultWriterProps()
-		var err error
-		s.writer, err = pqarrow.NewFileWriter(s.arrowSchema, w, writerProps, arrowProps)
-		if err != nil {
-			return fmt.Errorf("failed to create parquet writer: %w", err)
-		}
+// Open binds the serializer to w and creates the Parquet file writer.
+// Open may not be called more than once per serializer instance.
+func (s *ParquetSerializer) Open(w io.Writer) error {
+	if s.writer != nil {
+		return fmt.Errorf("ParquetSerializer: Open called more than once")
 	}
+	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Zstd))
+	arrowProps := pqarrow.DefaultWriterProps()
 
-	s.rows = append(s.rows, rec)
-
-	if len(s.rows) >= s.batchSize {
-		return s.Flush(w)
+	fw, err := pqarrow.NewFileWriter(s.arrowSchema, w, writerProps, arrowProps)
+	if err != nil {
+		return fmt.Errorf("failed to create Parquet file writer: %w", err)
 	}
-
+	s.writer = fw
 	return nil
 }
 
-func (s *ParquetSerializer) Flush(w io.Writer) error {
-	if len(s.rows) == 0 {
+// Serialize buffers rec and flushes a row group when batchSize is reached.
+func (s *ParquetSerializer) Serialize(rec *record.Record) error {
+	if s.writer == nil {
+		return fmt.Errorf("ParquetSerializer: Open must be called before Serialize")
+	}
+	s.rows = append(s.rows, rec)
+	if len(s.rows) >= s.batchSize {
+		return s.flush()
+	}
+	return nil
+}
+
+// Close flushes any remaining buffered rows and writes the Parquet footer.
+func (s *ParquetSerializer) Close() error {
+	if s.writer == nil {
 		return nil
 	}
-	if s.writer == nil {
-		return fmt.Errorf("writer not initialized")
+	if err := s.flush(); err != nil {
+		return err
+	}
+	if err := s.writer.Close(); err != nil {
+		return fmt.Errorf("failed to close Parquet writer: %w", err)
+	}
+	s.writer = nil
+	return nil
+}
+
+// flush writes the currently buffered rows as a single Arrow record batch.
+func (s *ParquetSerializer) flush() error {
+	if len(s.rows) == 0 {
+		return nil
 	}
 
 	rb := array.NewRecordBuilder(s.pool, s.arrowSchema)
@@ -80,7 +109,7 @@ func (s *ParquetSerializer) Flush(w io.Writer) error {
 				continue
 			}
 			if err := appendValue(fieldBuilder, val, col.Type); err != nil {
-				return fmt.Errorf("failed to append value for column %s: %w", col.Name, err)
+				return fmt.Errorf("column %q: %w", col.Name, err)
 			}
 		}
 	}
@@ -89,102 +118,9 @@ func (s *ParquetSerializer) Flush(w io.Writer) error {
 	defer arrowRec.Release()
 
 	if err := s.writer.Write(arrowRec); err != nil {
-		return fmt.Errorf("failed to write arrow record: %w", err)
+		return fmt.Errorf("failed to write Arrow record: %w", err)
 	}
 
-	s.rows = nil
-	return nil
-}
-
-func (s *ParquetSerializer) Close(w io.Writer) error {
-	if err := s.Flush(w); err != nil {
-		return err
-	}
-	if s.writer != nil {
-		if err := s.writer.Close(); err != nil {
-			return fmt.Errorf("failed to close parquet writer: %w", err)
-		}
-		s.writer = nil
-	}
-	return nil
-}
-
-func convertToArrowSchema(s *schema.Schema) (*arrow.Schema, error) {
-	fields := make([]arrow.Field, len(s.Columns))
-	for i, col := range s.Columns {
-		dt, err := getArrowType(col.Type)
-		if err != nil {
-			return nil, err
-		}
-		fields[i] = arrow.Field{Name: col.Name, Type: dt, Nullable: col.Nullable}
-	}
-	return arrow.NewSchema(fields, nil), nil
-}
-
-func getArrowType(t string) (arrow.DataType, error) {
-	switch t {
-	case "int64", "integer", "bigint":
-		return arrow.PrimitiveTypes.Int64, nil
-	case "string", "text", "varchar":
-		return arrow.BinaryTypes.String, nil
-	case "float64", "double":
-		return arrow.PrimitiveTypes.Float64, nil
-	case "bool", "boolean":
-		return arrow.FixedWidthTypes.Boolean, nil
-	case "timestamp", "datetime", "timestamptz":
-		return arrow.FixedWidthTypes.Timestamp_us, nil
-	default:
-		return nil, fmt.Errorf("unsupported type: %s", t)
-	}
-}
-
-func appendValue(b array.Builder, val any, t string) error {
-	switch b := b.(type) {
-	case *array.Int64Builder:
-		v, ok := val.(int64)
-		if !ok {
-			// Try conversion from other int types
-			switch i := val.(type) {
-			case int:
-				v = int64(i)
-			case int32:
-				v = int64(i)
-			default:
-				return fmt.Errorf("expected int64, got %T", val)
-			}
-		}
-		b.Append(v)
-	case *array.StringBuilder:
-		v, ok := val.(string)
-		if !ok {
-			return fmt.Errorf("expected string, got %T", val)
-		}
-		b.Append(v)
-	case *array.Float64Builder:
-		v, ok := val.(float64)
-		if !ok {
-			return fmt.Errorf("expected float64, got %T", val)
-		}
-		b.Append(v)
-	case *array.BooleanBuilder:
-		v, ok := val.(bool)
-		if !ok {
-			return fmt.Errorf("expected bool, got %T", val)
-		}
-		b.Append(v)
-	case *array.TimestampBuilder:
-		var v arrow.Timestamp
-		switch t := val.(type) {
-		case time.Time:
-			v = arrow.Timestamp(t.UnixMicro())
-		case int64:
-			v = arrow.Timestamp(t)
-		default:
-			return fmt.Errorf("expected time.Time or int64 for timestamp, got %T", val)
-		}
-		b.Append(v)
-	default:
-		return fmt.Errorf("unsupported builder type: %T", b)
-	}
+	s.rows = s.rows[:0]
 	return nil
 }

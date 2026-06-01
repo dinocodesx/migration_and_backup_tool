@@ -42,10 +42,10 @@ func TestMongoAdapter(t *testing.T) {
 		Database: "testdb",
 	}
 
-	adapter := mongo.NewMongoAdapter()
-	err = adapter.Connect(ctx, cfg)
+	mongoAdapter := mongo.NewMongoAdapter()
+	err = mongoAdapter.Connect(ctx, cfg)
 	assert.NoError(t, err)
-	defer adapter.Close()
+	defer mongoAdapter.Close()
 
 	table := "users"
 
@@ -67,38 +67,46 @@ func TestMongoAdapter(t *testing.T) {
 		},
 	}
 
-	n, err := adapter.WriteBatch(ctx, records)
+	// 2. Write some data
+	n, err := mongoAdapter.WriteBatch(ctx, records)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, n)
 
-	// 2. Read Schema
-	s, err := adapter.Schema(ctx, table)
+	// 3. Read Schema
+	s, err := mongoAdapter.Schema(ctx, table)
 	assert.NoError(t, err)
 	assert.Equal(t, table, s.Name)
 	assert.GreaterOrEqual(t, len(s.Columns), 3) // _id, name, age
 
-	// 3. Partitions
-	partitions, err := adapter.Partitions(ctx, table, 2)
+	// 4. Partitions
+	partitions, err := mongoAdapter.Partitions(ctx, table, 2)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, partitions)
 
-	// 4. Read Partitions
+	// 4. Read Partition using new synchronous interface
 	recordCh := make(chan *record.Record, 10)
-	errCh := make(chan error, 1)
-	
-	go adapter.ReadPartition(ctx, partitions[0], recordCh, errCh)
+
+	readErrCh := make(chan error, 1)
+	go func() {
+		readErrCh <- mongoAdapter.ReadPartition(ctx, partitions[0], recordCh)
+	}()
 
 	var readCount int
-	for i := 0; i < 2; i++ {
+	for {
 		select {
-		case rec := <-recordCh:
+		case rec, ok := <-recordCh:
+			if !ok {
+				goto done
+			}
 			assert.NotNil(t, rec)
 			readCount++
-		case err := <-errCh:
-			t.Fatalf("read partition failed: %s", err)
 		case <-time.After(5 * time.Second):
 			t.Fatal("timeout waiting for records")
 		}
+	}
+done:
+	if err := <-readErrCh; err != nil {
+		t.Fatalf("read partition failed: %s", err)
 	}
 	assert.Equal(t, 2, readCount)
 }

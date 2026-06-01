@@ -18,9 +18,14 @@ func TestParquetSerializer(t *testing.T) {
 		},
 	}
 
-	ser, err := NewParquetSerializer(s)
+	ser, err := NewParquetSerializer(s, 100)
 	if err != nil {
 		t.Fatalf("failed to create serializer: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := ser.Open(&buf); err != nil {
+		t.Fatalf("failed to open serializer: %v", err)
 	}
 
 	records := []*record.Record{
@@ -29,18 +34,17 @@ func TestParquetSerializer(t *testing.T) {
 		{Data: map[string]any{"id": int64(3), "name": nil, "active": true}},
 	}
 
-	var buf bytes.Buffer
 	for _, r := range records {
-		if err := ser.Serialize(&buf, r); err != nil {
-			t.Fatalf("failed to serialize: %v", err)
+		if err := ser.Serialize(r); err != nil {
+			t.Fatalf("failed to serialize record: %v", err)
 		}
 	}
 
-	if err := ser.Close(&buf); err != nil {
-		t.Fatalf("failed to close: %v", err)
+	if err := ser.Close(); err != nil {
+		t.Fatalf("failed to close serializer: %v", err)
 	}
 
 	if buf.Len() == 0 {
-		t.Errorf("expected non-empty output")
+		t.Errorf("expected non-empty Parquet output")
 	}
 }

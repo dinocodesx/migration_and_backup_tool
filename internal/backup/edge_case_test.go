@@ -10,61 +10,69 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/config"
 	"github.com/dinocodesx/gomigrate/internal/record"
 	"github.com/dinocodesx/gomigrate/internal/schema"
+	"go.uber.org/zap"
 )
 
-// MockSourceAdapter for edge case testing
+// ── MockSourceAdapter ─────────────────────────────────────────────────────────
+
+// MockSourceAdapter is a test double for adapter.SourceAdapter.
 type MockSourceAdapter struct {
 	records []*record.Record
-	err     error
+	err     error // injected error, sent after all records
 }
 
 func (m *MockSourceAdapter) Type() string                                           { return "mock" }
-func (m *MockSourceAdapter) Connect(ctx context.Context, cfg config.DBConfig) error { return nil }
+func (m *MockSourceAdapter) Connect(_ context.Context, _ config.DBConfig) error    { return nil }
 func (m *MockSourceAdapter) Close() error                                           { return nil }
-func (m *MockSourceAdapter) Schema(ctx context.Context, table string) (*schema.Schema, error) {
+func (m *MockSourceAdapter) Schema(_ context.Context, table string) (*schema.Schema, error) {
 	return &schema.Schema{Name: table}, nil
 }
-func (m *MockSourceAdapter) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
-	return []adapter.Partition{{ID: "p1"}}, nil
+func (m *MockSourceAdapter) Partitions(_ context.Context, table string, _ int) ([]adapter.Partition, error) {
+	return []adapter.Partition{{ID: "p1", Table: table}}, nil
 }
-func (m *MockSourceAdapter) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record, errCh chan<- error) {
+
+// ReadPartition sends all records then (optionally) an error, then closes ch.
+func (m *MockSourceAdapter) ReadPartition(_ context.Context, _ adapter.Partition, ch chan<- *record.Record) error {
 	defer close(ch)
 	for _, r := range m.records {
 		ch <- r
 	}
-	if m.err != nil {
-		errCh <- m.err
-	}
+	return m.err
 }
 
-// MockStorage with fault injection
+// ── FaultyStorage ─────────────────────────────────────────────────────────────
+
+// FaultyStorage is a storage backend that fails Put() with a configurable error.
 type FaultyStorage struct {
 	putErr error
 }
 
-func (f *FaultyStorage) Put(ctx context.Context, path string, reader io.Reader) error {
+func (f *FaultyStorage) Put(_ context.Context, _ string, reader io.Reader) error {
 	if f.putErr != nil {
 		return f.putErr
 	}
 	_, err := io.Copy(io.Discard, reader)
 	return err
 }
-func (f *FaultyStorage) Get(ctx context.Context, path string) (io.ReadCloser, error) { return nil, nil }
-func (f *FaultyStorage) List(ctx context.Context, prefix string) ([]string, error)   { return nil, nil }
-func (f *FaultyStorage) Delete(ctx context.Context, path string) error               { return nil }
-func (f *FaultyStorage) Exists(ctx context.Context, path string) (bool, error)       { return false, nil }
+func (f *FaultyStorage) Get(_ context.Context, _ string) (io.ReadCloser, error) { return nil, nil }
+func (f *FaultyStorage) List(_ context.Context, _ string) ([]string, error)     { return nil, nil }
+func (f *FaultyStorage) Delete(_ context.Context, _ string) error               { return nil }
+func (f *FaultyStorage) Exists(_ context.Context, _ string) (bool, error)       { return false, nil }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 func TestBackup_SourceError(t *testing.T) {
 	src := &MockSourceAdapter{
 		err: errors.New("database connection lost"),
 	}
 	store := &FaultyStorage{}
-	engine := NewEngine(store, NewNDJSONSerializer())
+	engine := NewEngine(store, NewNDJSONSerializer(), zap.NewNop(), 1)
 
-	_, err := engine.Backup(context.Background(), "test-op", src, "users", 1024)
+	_, err := engine.Backup(context.Background(), "test-op", src, "users", 0)
 	if err == nil {
 		t.Fatal("expected error from backup engine when source fails, got nil")
 	}
+	t.Logf("got expected error: %v", err)
 }
 
 func TestBackup_StorageError(t *testing.T) {
@@ -74,10 +82,25 @@ func TestBackup_StorageError(t *testing.T) {
 	store := &FaultyStorage{
 		putErr: errors.New("disk full"),
 	}
-	engine := NewEngine(store, NewNDJSONSerializer())
+	engine := NewEngine(store, NewNDJSONSerializer(), zap.NewNop(), 1)
 
-	_, err := engine.Backup(context.Background(), "test-op", src, "users", 1024)
+	_, err := engine.Backup(context.Background(), "test-op", src, "users", 0)
 	if err == nil {
 		t.Fatal("expected error from backup engine when storage fails, got nil")
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+func TestBackup_EmptySource(t *testing.T) {
+	src := &MockSourceAdapter{} // no records, no error
+	store := &FaultyStorage{}
+	engine := NewEngine(store, NewNDJSONSerializer(), zap.NewNop(), 1)
+
+	manifest, err := engine.Backup(context.Background(), "test-op-empty", src, "users", 0)
+	if err != nil {
+		t.Fatalf("unexpected error for empty source: %v", err)
+	}
+	if manifest.RowCount != 0 {
+		t.Errorf("expected 0 rows, got %d", manifest.RowCount)
 	}
 }
