@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 )
 
 // S3Storage is a storage backend that uses AWS S3.
@@ -106,8 +108,16 @@ func (s *S3Storage) Exists(ctx context.Context, path string) (bool, error) {
 		Key:    aws.String(s.fullPath(path)),
 	})
 	if err != nil {
-		// Checking for S3 specific "Not Found" error would be better but this is a start
-		return false, nil
+		var apiErr smithy.APIError
+		if ok := errors.As(err, &apiErr); ok {
+			switch apiErr.ErrorCode() {
+			case "NotFound", "NoSuchKey":
+				return false, nil
+			case "Forbidden", "AccessDenied":
+				return false, fmt.Errorf("access denied to S3: %w", err)
+			}
+		}
+		return false, fmt.Errorf("failed to check if S3 object exists: %w", err)
 	}
 	return true, nil
 }

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,8 +17,8 @@ import (
 
 // RestoreEngine handles the restoration workflow.
 type RestoreEngine struct {
-	storage    storage.Storage
-	target     adapter.TargetAdapter
+	storage storage.Storage
+	target  adapter.TargetAdapter
 }
 
 // NewRestoreEngine creates a new restore engine.
@@ -58,26 +59,34 @@ func (e *RestoreEngine) Restore(ctx context.Context, manifestPath string) error 
 }
 
 func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) error {
-	// 1. Download and Verify
+	// 1. Download and Verify Checksum FIRST
 	reader, err := e.storage.Get(ctx, chunk.File)
 	if err != nil {
 		return fmt.Errorf("failed to get chunk file: %w", err)
 	}
 	defer reader.Close()
 
-	hash := sha256.New()
-	tr := io.TeeReader(reader, hash)
+	chunkData, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("failed to read chunk: %w", err)
+	}
+
+	h := sha256.New()
+	h.Write(chunkData)
+	actualHash := hex.EncodeToString(h.Sum(nil))
+
+	if actualHash != chunk.SHA256 {
+		return fmt.Errorf("checksum mismatch for chunk %d: expected %s, got %s", chunk.Index, chunk.SHA256, actualHash)
+	}
 
 	// 2. Decompress
-	zr, err := zstd.NewReader(tr)
+	zr, err := zstd.NewReader(bytes.NewReader(chunkData))
 	if err != nil {
 		return fmt.Errorf("failed to create zstd reader: %w", err)
 	}
 	defer zr.Close()
 
 	// 3. Deserialize and Write
-	// Note: This is a simplified implementation. Real one would use NDJSON or Parquet readers.
-	// For now, let's assume NDJSON for simplicity in this step.
 	dec := json.NewDecoder(zr)
 	batch := make([]*record.Record, 0, 1000)
 
@@ -103,14 +112,6 @@ func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) error {
 		if _, err := e.target.WriteBatch(ctx, batch); err != nil {
 			return fmt.Errorf("failed to write final batch: %w", err)
 		}
-	}
-
-	// 4. Verify SHA-256
-	// We must consume the entire reader to compute the hash if we haven't already.
-	// TeeReader handles it if we read everything.
-	actualHash := hex.EncodeToString(hash.Sum(nil))
-	if actualHash != chunk.SHA256 {
-		return fmt.Errorf("checksum mismatch for chunk %d: expected %s, got %s", chunk.Index, chunk.SHA256, actualHash)
 	}
 
 	return nil

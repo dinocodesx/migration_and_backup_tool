@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // LocalStorage is a storage backend that uses the local filesystem.
@@ -27,12 +28,20 @@ func NewLocalStorage(baseDir string) (*LocalStorage, error) {
 	return &LocalStorage{baseDir: absPath}, nil
 }
 
-func (s *LocalStorage) fullPath(path string) string {
-	return filepath.Join(s.baseDir, path)
+func (s *LocalStorage) fullPath(path string) (string, error) {
+	fp := filepath.Join(s.baseDir, filepath.FromSlash(path))
+	rel, err := filepath.Rel(s.baseDir, fp)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return "", fmt.Errorf("invalid path: %s", path)
+	}
+	return fp, nil
 }
 
-func (s *LocalStorage) Put(ctx context.Context, path string, reader io.Reader) error {
-	fullPath := s.fullPath(path)
+func (s *LocalStorage) Put(ctx context.Context, path string, reader io.Reader) (err error) {
+	fullPath, err := s.fullPath(path)
+	if err != nil {
+		return err
+	}
 	
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
@@ -43,18 +52,31 @@ func (s *LocalStorage) Put(ctx context.Context, path string, reader io.Reader) e
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer f.Close()
+	
+	defer func() {
+		closeErr := f.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}()
 
 	_, err = io.Copy(f, reader)
 	if err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
+	if err = f.Sync(); err != nil {
+		return fmt.Errorf("failed to sync file: %w", err)
+	}
+
 	return nil
 }
 
 func (s *LocalStorage) Get(ctx context.Context, path string) (io.ReadCloser, error) {
-	fullPath := s.fullPath(path)
+	fullPath, err := s.fullPath(path)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.Open(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -66,16 +88,20 @@ func (s *LocalStorage) Get(ctx context.Context, path string) (io.ReadCloser, err
 }
 
 func (s *LocalStorage) List(ctx context.Context, prefix string) ([]string, error) {
-	var paths []string
-	searchDir := s.fullPath(prefix)
+	fullPrefix, err := s.fullPath(prefix)
+	if err != nil {
+		return nil, err
+	}
 	
-	// If searchDir is a file, just return it if it matches
-	info, err := os.Stat(searchDir)
+	var paths []string
+	
+	// If fullPrefix is a file, just return it if it matches
+	info, err := os.Stat(fullPrefix)
 	if err == nil && !info.IsDir() {
 		return []string{prefix}, nil
 	}
 
-	err = filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(fullPrefix, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -97,7 +123,10 @@ func (s *LocalStorage) List(ctx context.Context, prefix string) ([]string, error
 }
 
 func (s *LocalStorage) Delete(ctx context.Context, path string) error {
-	fullPath := s.fullPath(path)
+	fullPath, err := s.fullPath(path)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(fullPath); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -108,8 +137,11 @@ func (s *LocalStorage) Delete(ctx context.Context, path string) error {
 }
 
 func (s *LocalStorage) Exists(ctx context.Context, path string) (bool, error) {
-	fullPath := s.fullPath(path)
-	_, err := os.Stat(fullPath)
+	fullPath, err := s.fullPath(path)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(fullPath)
 	if err == nil {
 		return true, nil
 	}

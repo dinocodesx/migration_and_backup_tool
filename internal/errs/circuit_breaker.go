@@ -54,8 +54,8 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, f func() error) error {
 }
 
 func (cb *CircuitBreaker) allow() bool {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
 	if cb.state == StateClosed {
 		return true
@@ -63,10 +63,14 @@ func (cb *CircuitBreaker) allow() bool {
 
 	if cb.state == StateOpen {
 		if time.Since(cb.lastFailure) > cb.timeout {
-			// Transition to half-open would happen here in a full implementation.
-			// For simplicity, we'll just allow one trial.
+			cb.state = StateHalfOpen
 			return true
 		}
+		return false
+	}
+
+	if cb.state == StateHalfOpen {
+		// In half-open, only allow one request at a time
 		return false
 	}
 
@@ -79,10 +83,7 @@ func (cb *CircuitBreaker) recordFailure() {
 
 	cb.failures++
 	cb.lastFailure = time.Now()
-
-	if cb.failures >= cb.threshold {
-		cb.state = StateOpen
-	}
+	cb.state = StateOpen
 }
 
 func (cb *CircuitBreaker) recordSuccess() {
