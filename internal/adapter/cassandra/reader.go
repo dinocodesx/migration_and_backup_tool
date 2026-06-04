@@ -11,32 +11,34 @@ import (
 	"github.com/gocql/gocql"
 )
 
-// Reader handles parallel reading from Cassandra by partitioning the token space.
+// Reader provides the logic for parallel data extraction from Cassandra.
+// It uses token-based range queries to scan the entire Murmur3 token space
+// without performing heavy full-table scans that would overload coordinators.
 type Reader struct {
-	session  *gocql.Session
+	// session is the gocql connection session.
+	session *gocql.Session
+	// keyspace is the source keyspace.
 	keyspace string
 }
 
-// NewReader creates a new Reader for the specified keyspace, backed by the
-// provided Cassandra session.
+// NewReader creates a new Reader instance for the given session and keyspace.
 func NewReader(session *gocql.Session, keyspace string) *Reader {
 	return &Reader{session: session, keyspace: keyspace}
 }
 
-// Partitions divides the entire Murmur3 token range ([-2^63, 2^63-1]) into
-// n equal sub-ranges. This allows for parallel scanning of the table
-// across different coordinators and vnodes.
+// Partitions divides the Murmur3 token range ([-2^63, 2^63-1]) into 'n'
+// non-overlapping intervals. Each interval corresponds to a gomigrate Partition.
+// This approach ensures that data is read in a distributed fashion across the cluster.
 func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	if n <= 0 {
 		n = 1
 	}
 
-	// Murmur3 token range: [-2^63, 2^63-1]
 	minToken := big.NewInt(-1)
-	minToken.Lsh(minToken, 63) // -2^63
+	minToken.Lsh(minToken, 63)
 
 	maxToken := big.NewInt(1)
-	maxToken.Lsh(maxToken, 63).Sub(maxToken, big.NewInt(1)) // 2^63-1
+	maxToken.Lsh(maxToken, 63).Sub(maxToken, big.NewInt(1))
 
 	totalRange := big.NewInt(0).Sub(maxToken, minToken)
 	numPartitions := big.NewInt(int64(n))
@@ -63,13 +65,11 @@ func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter
 	return partitions, nil
 }
 
-// ReadPartition streams every record within the specified token range onto ch.
-// It uses the token() function in the WHERE clause to perform an efficient
-// range scan.
+// ReadPartition executes a CQL query using the 'token()' function to filter
+// records within a specific token range. It handles UUID normalization to
+// strings to maintain cross-database compatibility within the Record structure.
 //
-// Records are identified by a composite key consisting of their partition and
-// clustering columns. UUIDs are automatically normalized to their string
-// representation for cross-database compatibility.
+// The result set is paged (default size 1000) and streamed into the channel.
 func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
 	defer close(ch)
 
@@ -100,7 +100,6 @@ func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan
 		token := row["gomigrate_token"]
 		delete(row, "gomigrate_token")
 
-		// Identify PK values for the record ID and normalize UUIDs to strings
 		var pkValues []string
 		for _, col := range tableMetadata.PartitionKey {
 			val := row[col.Name]
@@ -119,7 +118,6 @@ func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan
 			pkValues = append(pkValues, fmt.Sprintf("%v", val))
 		}
 
-		// Normalize other UUIDs in the row
 		for k, v := range row {
 			if uuid, ok := v.(gocql.UUID); ok {
 				row[k] = uuid.String()

@@ -9,11 +9,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// GC removes checkpoint data for operations whose start time is older than
-// retentionAge. It is safe to call periodically or at startup.
-//
-// Typical usage: call GC at startup with a retention of 7 days so the bolt
-// file doesn't grow unboundedly over many migration runs.
+// GC (Garbage Collection) removes checkpoint data for jobs that were started
+// longer ago than the specified 'retentionAge'. This prevents the Bolt database
+// from growing indefinitely.
 func GC(store *Store, logger *zap.Logger, retentionAge time.Duration) error {
 	ids, err := store.ListAllMetaIDs()
 	if err != nil {
@@ -47,8 +45,8 @@ func GC(store *Store, logger *zap.Logger, retentionAge time.Duration) error {
 	return nil
 }
 
-// ListAllMetaIDs returns the operation IDs of every entry in the meta bucket.
-// It is a low-level helper exposed for GC and tooling.
+// ListAllMetaIDs returns a slice of all operation identifiers currently tracked
+// in the metadata bucket.
 func (s *Store) ListAllMetaIDs() ([]string, error) {
 	var ids []string
 	err := s.db.View(func(tx *bbolt.Tx) error {
@@ -65,7 +63,7 @@ func (s *Store) ListAllMetaIDs() ([]string, error) {
 	return ids, nil
 }
 
-// ListAllMeta returns every OperationMeta stored in the meta bucket.
+// ListAllMeta returns a slice of all global metadata objects in the store.
 func (s *Store) ListAllMeta() ([]OperationMeta, error) {
 	var metas []OperationMeta
 	err := s.db.View(func(tx *bbolt.Tx) error {

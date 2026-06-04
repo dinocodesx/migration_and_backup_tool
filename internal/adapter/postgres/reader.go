@@ -10,41 +10,39 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Reader handles parallel reading from PostgreSQL by partitioning tables
-// based on primary key ranges.
+// Reader encapsulates the logic for extracting data from PostgreSQL in parallel.
+// It leverages primary-key range partitioning to allow multiple workers to
+// read non-overlapping segments of a table concurrently.
 type Reader struct {
+	// db is the connection pool used for queries.
 	db *pgxpool.Pool
 }
 
-// NewReader creates a new Reader backed by the provided PostgreSQL connection pool.
+// NewReader creates a new Reader instance using the provided connection pool.
 func NewReader(db *pgxpool.Pool) *Reader {
 	return &Reader{db: db}
 }
 
-// Partitions calculates n roughly equal partitions for the specified table
-// based on the minimum and maximum values of the 'id' (primary key) column.
+// Partitions splits a table into 'n' roughly equal segments based on its
+// primary key range. It queries the MIN and MAX of the 'id' column to determine
+// the global range and then divides it into contiguous, non-overlapping intervals.
 //
-// If the table is empty, it returns an empty slice.
-// If the ID range is too small for the requested number of partitions,
-// it returns a single partition covering the entire range.
+// This method assumes the table has an integer primary key named 'id'.
+// If the table is empty, it returns an empty slice of partitions.
 func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	tableName := pgx.Identifier{table}.Sanitize()
 	query := fmt.Sprintf("SELECT MIN(id), MAX(id) FROM %s", tableName)
 
-	// Use nullable pointers so that an empty table returns (nil, nil) instead
-	// of causing a scan error.
 	var minID, maxID *int64
 	if err := r.db.QueryRow(ctx, query).Scan(&minID, &maxID); err != nil {
 		return nil, fmt.Errorf("failed to get min/max PK for table %s: %w", table, err)
 	}
 
-	// Empty table — nothing to partition.
 	if minID == nil || maxID == nil {
 		return []adapter.Partition{}, nil
 	}
 	min, max := *minID, *maxID
 
-	// Single record or range is zero — return a single partition.
 	if max <= min {
 		return []adapter.Partition{{ID: "p0", Table: table, Start: min, End: max + 1}}, nil
 	}
@@ -62,7 +60,7 @@ func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter
 		start := min + int64(i)*step
 		end := start + step
 		if i == n-1 {
-			end = max + 1 // inclusive upper bound
+			end = max + 1
 		}
 		partitions = append(partitions, adapter.Partition{
 			ID:    fmt.Sprintf("p%d", i),
@@ -75,12 +73,12 @@ func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter
 	return partitions, nil
 }
 
-// ReadPartition executes a SELECT query for a specific ID range and streams
-// each resulting row as a record.Record onto the provided channel.
+// ReadPartition executes a range query for the specified partition and streams
+// the results into the provided channel as Record objects.
 //
-// It sanitizes the table name and uses parameterized queries for the range bounds.
-// The channel is closed when reading is complete or an error occurs.
-// It respects context cancellation.
+// It performs a 'SELECT *' within the PK boundaries. Each row is converted
+// into a map-based representation within the Record. The channel is closed
+// automatically once all rows are processed or an error occurs.
 func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
 	defer close(ch)
 
@@ -96,7 +94,6 @@ func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan
 	fieldDescs := rows.FieldDescriptions()
 
 	for rows.Next() {
-		// Check for context cancellation between rows.
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -118,7 +115,6 @@ func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan
 				offset = values[i]
 			}
 		}
-		// Fallback: if no "id" column, use the first column as offset.
 		if offset == nil && len(values) > 0 {
 			offset = values[0]
 		}

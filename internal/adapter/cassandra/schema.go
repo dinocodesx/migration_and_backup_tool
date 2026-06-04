@@ -8,9 +8,9 @@ import (
 	"github.com/gocql/gocql"
 )
 
-// GetSchema introspects the Cassandra table using the Metadata API provided by gocql.
-// It retrieves column names, types, and identifies primary key (partition and
-// clustering) columns.
+// GetSchema introspects a Cassandra table using the gocql Metadata API.
+// It retrieves column definitions, identifies partition and clustering keys,
+// and maps CQL data types to the canonical gomigrate type system.
 func GetSchema(ctx context.Context, session *gocql.Session, keyspace, table string) (*schema.Schema, error) {
 	ksMetadata, err := session.KeyspaceMetadata(keyspace)
 	if err != nil {
@@ -41,16 +41,15 @@ func GetSchema(ctx context.Context, session *gocql.Session, keyspace, table stri
 			Name:       colName,
 			Type:       mapCassandraType(colMetadata.Type),
 			PrimaryKey: pkMap[colName],
-			Nullable:   true, // Cassandra columns are generally nullable except PKs
+			Nullable:   true,
 		})
 	}
 
 	return s, nil
 }
 
-// mapCassandraType converts a gocql.TypeInfo to the canonical gomigrate
-// type string. It handles standard CQL types including UUIDs, collections,
-// and blobs.
+// mapCassandraType translates gocql type information into canonical gomigrate
+// type strings. It handles standard primitives, collections, and blobs.
 func mapCassandraType(t gocql.TypeInfo) string {
 	switch t.Type() {
 	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeSmallInt, gocql.TypeTinyInt:
@@ -62,7 +61,7 @@ func mapCassandraType(t gocql.TypeInfo) string {
 	case gocql.TypeTimestamp:
 		return "timestamp"
 	case gocql.TypeUUID, gocql.TypeTimeUUID:
-		return "string" // canonical UUID format as string
+		return "string"
 	case gocql.TypeBlob:
 		return "blob"
 	case gocql.TypeList, gocql.TypeSet:

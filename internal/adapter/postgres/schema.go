@@ -8,14 +8,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// GetSchema introspects the PostgreSQL database to get the canonical schema of
-// a table. It queries the information_schema.columns table to retrieve column
-// names, data types, nullability, and default values.
+// GetSchema introspects a PostgreSQL table to determine its canonical schema.
+// It queries the information_schema to extract column names, types, nullability,
+// and default values. It also identifies primary key columns by joining
+// table_constraints and key_column_usage catalogs.
 //
-// The query filters by table_schema to avoid collisions when multiple
-// schemas contain tables with the same name. It also identifies primary key
-// columns by joining information_schema.table_constraints and
-// information_schema.key_column_usage.
+// The 'tableSchema' parameter specifies the PostgreSQL schema (e.g., "public").
 func GetSchema(ctx context.Context, db *pgxpool.Pool, table, tableSchema string) (*schema.Schema, error) {
 	if tableSchema == "" {
 		tableSchema = "public"
@@ -60,7 +58,6 @@ func GetSchema(ctx context.Context, db *pgxpool.Pool, table, tableSchema string)
 		return nil, fmt.Errorf("table %q not found in schema %q", table, tableSchema)
 	}
 
-	// Identify primary key column(s).
 	pkQuery := `
 		SELECT kcu.column_name
 		FROM information_schema.table_constraints tc
@@ -98,8 +95,9 @@ func GetSchema(ctx context.Context, db *pgxpool.Pool, table, tableSchema string)
 	return s, nil
 }
 
-// mapPostgresType converts a PostgreSQL data_type string (from information_schema)
-// to the canonical gomigrate type string used for schema mapping and record validation.
+// mapPostgresType translates PostgreSQL-specific data types to the internal
+// gomigrate canonical type system. This normalization is essential for
+// cross-engine migrations (e.g., Postgres to Mongo).
 func mapPostgresType(pgType string) string {
 	switch pgType {
 	case "integer", "bigint", "smallint", "int", "int2", "int4", "int8":
@@ -120,6 +118,6 @@ func mapPostgresType(pgType string) string {
 	case "ARRAY":
 		return "array"
 	default:
-		return "string" // safe fallback — stored as text
+		return "string"
 	}
 }

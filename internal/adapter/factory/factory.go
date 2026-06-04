@@ -12,9 +12,11 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/adapter/postgres"
 )
 
-// NewSourceAdapter returns a SourceAdapter based on the provided database type.
-// It supports "postgres", "mongo" (or "mongodb"), and "cassandra".
-// If the dbType is unsupported, it returns an error.
+// NewSourceAdapter returns a concrete implementation of SourceAdapter based on
+// the provided database type string. It serves as a dispatcher to instantiate
+// the correct adapter for extraction operations.
+//
+// Supported types: "postgres", "mongo" (or "mongodb"), and "cassandra".
 func NewSourceAdapter(dbType string) (adapter.SourceAdapter, error) {
 	switch dbType {
 	case "postgres":
@@ -28,9 +30,11 @@ func NewSourceAdapter(dbType string) (adapter.SourceAdapter, error) {
 	}
 }
 
-// NewTargetAdapter returns a TargetAdapter based on the provided database type.
-// It supports "postgres", "mongo" (or "mongodb"), and "cassandra".
-// If the dbType is unsupported, it returns an error.
+// NewTargetAdapter returns a concrete implementation of TargetAdapter based on
+// the provided database type string. It serves as a dispatcher to instantiate
+// the correct adapter for loading operations.
+//
+// Supported types: "postgres", "mongo" (or "mongodb"), and "cassandra".
 func NewTargetAdapter(dbType string) (adapter.TargetAdapter, error) {
 	switch dbType {
 	case "postgres":

@@ -6,27 +6,22 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/record"
 )
 
-/*
-Serializer defines the interface for converting record batches into a persistent binary stream.
-
-It is the abstraction layer between the database records and the storage format (e.g., Parquet, JSON).
-
-Standard Lifecycle:
- 1. Open(w): Bind the serializer to a target io.Writer (usually a Compressor or Storage stream).
- 2. Serialize(rec): Convert and write individual records. Buffering may occur.
- 3. Close(): Finalize the stream. Writes headers/footers and flushes all internal buffers.
-
-Note: Serializer instances are NOT thread-safe. They are managed by the Engine
-which ensures sequential access per chunk.
-*/
+// Serializer defines the interface for converting record streams into persistent
+// file formats. It provides the abstraction needed to support multiple output
+// formats like Parquet, NDJSON, or CSV within the backup engine.
+//
+// Lifecycle:
+//  1. Open(w): Bind to an output stream (usually a compressor or storage writer).
+//  2. Serialize(rec): Encode individual records.
+//  3. Close(): Finalize the stream and write any required footers/metadata.
 type Serializer interface {
-	// Open binds the serializer to w. It must be called once before any Serialize calls.
+	// Open prepares the serializer to write data to 'w'.
 	Open(w io.Writer) error
 
 	// Serialize encodes a single record into the bound writer.
 	Serialize(rec *record.Record) error
 
-	// Close finalizes the serialization process. This is CRITICAL for formats like Parquet
-	// which require a metadata footer to be written at the end of the file.
+	// Close finalizes the serialization process. This is critical for formats
+	// like Parquet that require trailing metadata.
 	Close() error
 }

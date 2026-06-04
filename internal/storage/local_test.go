@@ -8,6 +8,9 @@ import (
 	"testing"
 )
 
+// TestLocalStorage verifies the end-to-end functionality of the local filesystem
+// storage backend, including file creation, existence checks, retrieval,
+// directory listing, and deletion.
 func TestLocalStorage(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "storage_test")
 	if err != nil {
@@ -24,12 +27,12 @@ func TestLocalStorage(t *testing.T) {
 	path := "test/file.txt"
 	content := []byte("hello world")
 
-	// Test Put
+	// Verify file creation.
 	if err := s.Put(ctx, path, bytes.NewReader(content)); err != nil {
 		t.Fatalf("failed to put file: %v", err)
 	}
 
-	// Test Exists
+	// Verify existence check.
 	exists, err := s.Exists(ctx, path)
 	if err != nil {
 		t.Fatalf("failed to check existence: %v", err)
@@ -38,7 +41,7 @@ func TestLocalStorage(t *testing.T) {
 		t.Errorf("expected file to exist")
 	}
 
-	// Test Get
+	// Verify data retrieval.
 	reader, err := s.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("failed to get file: %v", err)
@@ -53,7 +56,7 @@ func TestLocalStorage(t *testing.T) {
 		t.Errorf("expected content %s, got %s", content, got)
 	}
 
-	// Test List
+	// Verify directory listing.
 	paths, err := s.List(ctx, "test")
 	if err != nil {
 		t.Fatalf("failed to list: %v", err)
@@ -62,7 +65,7 @@ func TestLocalStorage(t *testing.T) {
 		t.Errorf("expected paths [%s], got %v", path, paths)
 	}
 
-	// Test Delete
+	// Verify file deletion.
 	if err := s.Delete(ctx, path); err != nil {
 		t.Fatalf("failed to delete: %v", err)
 	}

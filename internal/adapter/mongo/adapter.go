@@ -1,6 +1,6 @@
-// Package mongo provides a MongoDB implementation of the adapter interfaces.
-// It supports both reading from (source) and writing to (target) MongoDB clusters,
-// including support for replica sets and sharded clusters via URI configuration.
+// Package mongo provides a production-grade MongoDB implementation of the
+// gomigrate adapter interfaces. It supports single-node, replica sets, and
+// sharded clusters using the official MongoDB Go driver.
 package mongo
 
 import (
@@ -15,26 +15,27 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-// MongoAdapter implements both adapter.SourceAdapter and adapter.TargetAdapter
-// for MongoDB. It manages the underlying mongo.Client and tracks connection
-// configuration.
+// MongoAdapter implements both adapter.SourceAdapter and adapter.TargetAdapter.
+// It manages a mongo.Client and provides a unified interface for data
+// extraction and ingestion.
 type MongoAdapter struct {
+	// client is the connected MongoDB client.
 	client *mongo.Client
+	// config stores the database configuration used for connections.
 	config config.DBConfig
 }
 
-// NewMongoAdapter creates a new, unconnected MongoAdapter.
-// Use Connect() to initialize the connection before use.
+// NewMongoAdapter returns an uninitialized MongoAdapter.
 func NewMongoAdapter() *MongoAdapter {
 	return &MongoAdapter{}
 }
 
-// Type returns the adapter's database identifier, which is "mongo".
+// Type returns the adapter identifier "mongo".
 func (a *MongoAdapter) Type() string { return "mongo" }
 
-// Connect builds a MongoDB connection URI from the provided configuration,
-// creates a new client, and verifies connectivity by pinging the primary.
-// It supports both single-host and multi-host (comma-separated) configurations.
+// Connect establishes a connection to the MongoDB cluster. It automatically
+// constructs a connection URI from the config (supporting multiple hosts for
+// high availability) and verifies the connection with a ping.
 func (a *MongoAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 	a.config = cfg
 
@@ -46,9 +47,7 @@ func (a *MongoAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 		uri = fmt.Sprintf("mongodb://%s:%d/%s", cfg.Host, cfg.Port, cfg.Database)
 	}
 
-	// When multiple hosts are provided (replica set / sharded), join them.
 	if len(cfg.Hosts) > 0 {
-		// The mongo driver accepts a comma-separated host list in the URI.
 		hostStr := cfg.Hosts[0]
 		for _, h := range cfg.Hosts[1:] {
 			hostStr += "," + h
@@ -76,8 +75,7 @@ func (a *MongoAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 	return nil
 }
 
-// Close disconnects the MongoDB client with a graceful timeout (5 seconds).
-// If the client is nil, it returns immediately with no error.
+// Close gracefully disconnects from the MongoDB cluster with a 5-second timeout.
 func (a *MongoAdapter) Close() error {
 	if a.client == nil {
 		return nil

@@ -11,16 +11,15 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Schema infers the schema of a MongoDB collection by sampling a subset of documents.
-// Since MongoDB is schema-less, it scans up to the first 1000 documents to
-// identify the union of all fields and their types.
+// Schema infers the structure of a MongoDB collection by sampling the first
+// 1000 documents. Since MongoDB is schema-less, it performs a union of all
+// observed fields and their types to create a representative canonical schema.
 //
-// All fields are marked as Nullable since MongoDB does not enforce field presence.
-// The "_id" field is always identified as the PrimaryKey.
+// Fields are marked as Nullable by default, and the '_id' field is always
+// identified as the PrimaryKey.
 func (a *MongoAdapter) Schema(ctx context.Context, table string) (*schema.Schema, error) {
 	coll := a.client.Database(a.config.Database).Collection(table)
 
-	// Sample the first 1000 documents
 	opts := options.Find().SetLimit(1000)
 	cursor, err := coll.Find(ctx, bson.M{}, opts)
 	if err != nil {
@@ -41,7 +40,7 @@ func (a *MongoAdapter) Schema(ctx context.Context, table string) (*schema.Schema
 				col := schema.Column{
 					Name:       k,
 					Type:       inferType(v),
-					Nullable:   true, // In Mongo, any field can be missing/null
+					Nullable:   true,
 					PrimaryKey: k == "_id",
 				}
 				columnsMap[k] = col
@@ -54,7 +53,6 @@ func (a *MongoAdapter) Schema(ctx context.Context, table string) (*schema.Schema
 	}
 
 	columns := make([]schema.Column, 0, len(columnsMap))
-	// Ensure _id is first if it exists
 	if idCol, ok := columnsMap["_id"]; ok {
 		columns = append(columns, idCol)
 		delete(columnsMap, "_id")
@@ -70,9 +68,9 @@ func (a *MongoAdapter) Schema(ctx context.Context, table string) (*schema.Schema
 	}, nil
 }
 
-// inferType maps a BSON value to a standard gomigrate type string.
-// It handles common BSON types like ObjectID, DateTime, and Decimal128,
-// mapping them to their closest counterparts in the gomigrate type system.
+// inferType maps a BSON value to its canonical gomigrate type representation.
+// It handles specialized BSON types like ObjectID and DateTime, normalizing
+// them for cross-database compatibility.
 func inferType(v any) string {
 	if v == nil {
 		return "null"
@@ -90,9 +88,9 @@ func inferType(v any) string {
 	case primitive.DateTime:
 		return "timestamp"
 	case primitive.ObjectID:
-		return "string" // Standardized to primitive
+		return "string"
 	case primitive.Decimal128:
-		return "float64" // Standardized to primitive (potential precision loss, but keeps compatibility)
+		return "float64"
 	case bson.M, bson.D:
 		return "map"
 	case bson.A:
@@ -100,7 +98,6 @@ func inferType(v any) string {
 	case []byte:
 		return "blob"
 	default:
-		// Use reflection as a fallback
 		t := reflect.TypeOf(v)
 		if t != nil {
 			return t.Name()

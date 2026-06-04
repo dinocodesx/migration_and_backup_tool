@@ -1,3 +1,6 @@
+// Package telemetry provides utilities for centralized observability, including
+// structured logging and distributed tracing. It standardizes how information
+// is reported across the various components of the gomigrate system.
 package telemetry
 
 import (
@@ -7,9 +10,12 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// NewLogger creates a production-ready zap logger.
-//   - level: "debug" | "info" | "warn" | "error"
-//   - format: "json" | "console"
+// NewLogger creates a configured Uber Zap logger suitable for production use.
+// It supports both JSON (for machine consumption) and Console (for human reading) formats.
+//
+// Parameters:
+//   - level: The minimum logging severity (e.g., "debug", "info", "warn", "error").
+//   - format: The output format ("json" or "console").
 func NewLogger(level, format string) (*zap.Logger, error) {
 	var zapLevel zapcore.Level
 	if err := zapLevel.UnmarshalText([]byte(level)); err != nil {
@@ -51,7 +57,8 @@ func NewLogger(level, format string) (*zap.Logger, error) {
 	return logger, nil
 }
 
-// Nop returns a no-op logger useful in tests.
+// Nop returns a "no-op" logger that discards all log entries.
+// This is primarily useful for unit tests or as a safe default fallback.
 func Nop() *zap.Logger {
 	return zap.NewNop()
 }

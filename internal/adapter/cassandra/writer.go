@@ -10,30 +10,30 @@ import (
 	"github.com/gocql/gocql"
 )
 
-// Writer handles bulk writing to Cassandra using unlogged batches.
+// Writer provides high-performance data ingestion for Cassandra using
+// unlogged batches. It optimizes throughput while maintaining data integrity.
 type Writer struct {
-	session  *gocql.Session
+	// session is the gocql connection session.
+	session *gocql.Session
+	// keyspace is the target keyspace.
 	keyspace string
-	table    string
+	// table is the name of the target table.
+	table string
 }
 
-// NewWriter creates a new Writer for the specified table and keyspace.
+// NewWriter creates a new Writer instance for the specified target.
 func NewWriter(session *gocql.Session, keyspace, table string) *Writer {
 	return &Writer{session: session, keyspace: keyspace, table: table}
 }
 
-// WriteBatch writes a batch of records to Cassandra.
-//
-// It groups records into sub-batches of 100 to avoid server-side warnings and
-// potential performance degradation associated with large unlogged batches.
-// Each record is inserted using a standard INSERT INTO statement within
-// the batch.
+// WriteBatch inserts a slice of records into Cassandra. It splits the batch
+// into smaller chunks (default size 100) to avoid large batch warnings
+// and potential coordinator timeouts.
 func (w *Writer) WriteBatch(ctx context.Context, batch []*record.Record) (int, error) {
 	if len(batch) == 0 {
 		return 0, nil
 	}
 
-	// Group by 100 to avoid large batch warnings
 	const maxBatchSize = 100
 	totalWritten := 0
 
@@ -70,13 +70,8 @@ func (w *Writer) WriteBatch(ctx context.Context, batch []*record.Record) (int, e
 	return totalWritten, nil
 }
 
-// ApplySchema creates the target table if it does not already exist.
-//
-// In Cassandra, it simplifies the primary key definition by treating all
-// primary key columns from the canonical schema as part of a single
-// composite partition key. This is a simplification for migration purposes;
-// for production use cases, partition and clustering keys should be
-// carefully designed.
+// ApplySchema creates the target table using CQL. It simplifies composite
+// primary keys by treating all primary key columns as the partition key.
 func (w *Writer) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	w.table = s.Name
 
@@ -95,8 +90,6 @@ func (w *Writer) ApplySchema(ctx context.Context, s *schema.Schema) error {
 		return fmt.Errorf("no primary key defined for table %s", s.Name)
 	}
 
-	// In Cassandra, composite PKs are (part1, part2, ...).
-	// To simplify, we treat all PK columns as the partition key.
 	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s, PRIMARY KEY ((%s)))",
 		s.Name,
 		strings.Join(colDefs, ", "),
@@ -109,8 +102,7 @@ func (w *Writer) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	return nil
 }
 
-// mapToCassandraType converts a canonical gomigrate type string to its
-// corresponding CQL data type for table creation.
+// mapToCassandraType translates canonical gomigrate types back to CQL types.
 func mapToCassandraType(t string) string {
 	switch t {
 	case "int64":
@@ -124,9 +116,9 @@ func mapToCassandraType(t string) string {
 	case "timestamp":
 		return "timestamp"
 	case "array":
-		return "list<text>" // Defaulting to list of text for generic arrays
+		return "list<text>"
 	case "map":
-		return "map<text, text>" // Defaulting to map of text to text
+		return "map<text, text>"
 	case "blob":
 		return "blob"
 	default:

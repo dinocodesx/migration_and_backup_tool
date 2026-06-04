@@ -14,7 +14,8 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// S3Storage is a storage backend that uses AWS S3.
+// S3Storage implements the Storage interface for AWS S3. It uses the
+// AWS SDK v2 for high-performance concurrent uploads and downloads.
 type S3Storage struct {
 	client     *s3.Client
 	uploader   *manager.Uploader
@@ -23,7 +24,8 @@ type S3Storage struct {
 	prefix     string
 }
 
-// NewS3Storage creates a new S3Storage backend.
+// NewS3Storage initializes a new S3Storage backend. It loads default AWS
+// credentials and configuration from the environment and SDK defaults.
 func NewS3Storage(ctx context.Context, bucket, prefix, region string) (*S3Storage, error) {
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
@@ -40,10 +42,13 @@ func NewS3Storage(ctx context.Context, bucket, prefix, region string) (*S3Storag
 	}, nil
 }
 
+// fullPath combines the configured prefix with the logical object path.
 func (s *S3Storage) fullPath(path string) string {
 	return s.prefix + path
 }
 
+// Put uploads data to S3 using the high-level 'uploader' manager, which
+// handles multipart uploads automatically for large files.
 func (s *S3Storage) Put(ctx context.Context, path string, reader io.Reader) error {
 	_, err := s.uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -56,6 +61,7 @@ func (s *S3Storage) Put(ctx context.Context, path string, reader io.Reader) erro
 	return nil
 }
 
+// Get retrieves an object from S3 and returns a readable stream.
 func (s *S3Storage) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -67,6 +73,8 @@ func (s *S3Storage) Get(ctx context.Context, path string) (io.ReadCloser, error)
 	return output.Body, nil
 }
 
+// List iterates through all S3 objects under the configured prefix using
+// pagination to handle buckets with a large number of artifacts.
 func (s *S3Storage) List(ctx context.Context, prefix string) ([]string, error) {
 	var paths []string
 	fullPrefix := s.fullPath(prefix)
@@ -91,6 +99,7 @@ func (s *S3Storage) List(ctx context.Context, prefix string) ([]string, error) {
 	return paths, nil
 }
 
+// Delete removes an object from the S3 bucket.
 func (s *S3Storage) Delete(ctx context.Context, path string) error {
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -102,6 +111,7 @@ func (s *S3Storage) Delete(ctx context.Context, path string) error {
 	return nil
 }
 
+// Exists checks if an object exists in S3 by performing a lightweight HEAD request.
 func (s *S3Storage) Exists(ctx context.Context, path string) (bool, error) {
 	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
