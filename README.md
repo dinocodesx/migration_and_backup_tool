@@ -10,22 +10,22 @@ gomigrate is designed to handle large-scale database operations with high effici
 
 - **High Concurrency**: Utilizes Go's concurrency model for fast data transfer with configurable reader, transformer, and writer pools.
 - **Multiple Operations**: Supports `migrate`, `backup`, `restore`, and `verify`.
-- **Database Support**: 
-    - PostgreSQL
-    - MySQL
-    - MongoDB (Adapter structure present)
-    - Cassandra (Adapter structure present)
+- **Database Support**:
+  - PostgreSQL
+  - MySQL
+  - MongoDB (Adapter structure present)
+  - Cassandra (Adapter structure present)
 - **Backup Formats**:
-    - Parquet (High-performance columnar storage)
-    - NDJSON (Line-delimited JSON)
+  - Parquet (High-performance columnar storage)
+  - NDJSON (Line-delimited JSON)
 - **Storage Backends**:
-    - Local File System
-    - Amazon S3
-    - Google Cloud Storage (GCS)
-- **Reliability**: 
-    - Checkpointing for resumable operations.
-    - Retry logic with circuit breakers.
-    - Post-migration/backup verification.
+  - Local File System
+  - Amazon S3
+  - Google Cloud Storage (GCS)
+- **Reliability**:
+  - Checkpointing for resumable operations.
+  - Retry logic with circuit breakers.
+  - Post-migration/backup verification.
 - **Telemetry**: Prometheus metrics and structured logging.
 
 ## Installation
@@ -51,19 +51,6 @@ Run the tool using a configuration file:
 ```bash
 ./gomigrate --config configs/example.yaml
 ```
-
-## Quick Demo (PostgreSQL Backup & Restore)
-
-We have provided a demo script that automates a full lifecycle: building the tool, seeding a PostgreSQL database with 1,000 records, performing a Parquet backup, verifying it, and then restoring it.
-
-**Requirements**: Docker and Go installed.
-
-```bash
-# Run the automated demo
-./demo/run_demo.sh
-```
-
-The script will output progress and confirm if the record counts match after restoration.
 
 ## Configuration
 
