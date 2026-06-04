@@ -9,7 +9,8 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
-// convertToArrowSchema converts a source schema into an Arrow schema.
+// convertToArrowSchema maps a gomigrate table schema to an Apache Arrow schema.
+// This is used for creating typed Parquet files.
 func convertToArrowSchema(s *schema.Schema) (*arrow.Schema, error) {
 	fields := make([]arrow.Field, len(s.Columns))
 	for i, col := range s.Columns {
@@ -22,6 +23,7 @@ func convertToArrowSchema(s *schema.Schema) (*arrow.Schema, error) {
 	return arrow.NewSchema(fields, nil), nil
 }
 
+// getArrowType maps internal gomigrate type strings to Arrow data types.
 func getArrowType(t string) (arrow.DataType, error) {
 	switch t {
 	case "int64", "integer", "bigint":
@@ -33,16 +35,19 @@ func getArrowType(t string) (arrow.DataType, error) {
 	case "bool", "boolean":
 		return arrow.FixedWidthTypes.Boolean, nil
 	case "timestamp", "datetime", "timestamptz":
+		// We use microsecond precision for timestamps to match most DB resolutions.
 		return arrow.FixedWidthTypes.Timestamp_us, nil
 	case "map", "array", "blob", "null", "any":
-		// Fallback: store as JSON string.
+		// Complex or unsupported types are currently stringified (JSON) for compatibility.
 		return arrow.BinaryTypes.String, nil
 	default:
+		// Fallback to string for unknown types to prevent data loss.
 		return arrow.BinaryTypes.String, nil
 	}
 }
 
-// appendValue appends a single value to the appropriate Arrow builder.
+// appendValue handles the type-safe insertion of Go values into Arrow builders.
+// It includes coercion logic to handle minor type mismatches from source databases.
 func appendValue(b array.Builder, val any, t string) error {
 	switch b := b.(type) {
 	case *array.Int64Builder:
@@ -54,7 +59,7 @@ func appendValue(b array.Builder, val any, t string) error {
 		case int32:
 			b.Append(int64(v))
 		case float64:
-			b.Append(int64(v))
+			b.Append(int64(v)) // Coerce float to int if schema expects int.
 		default:
 			return fmt.Errorf("cannot coerce %T to int64", val)
 		}
@@ -63,7 +68,7 @@ func appendValue(b array.Builder, val any, t string) error {
 		case string:
 			b.Append(v)
 		default:
-			// Stringify anything else (maps, arrays, etc.).
+			// Automatically stringify complex objects (maps, slices) or numbers.
 			b.Append(fmt.Sprintf("%v", v))
 		}
 	case *array.Float64Builder:
@@ -86,6 +91,7 @@ func appendValue(b array.Builder, val any, t string) error {
 	case *array.TimestampBuilder:
 		switch v := val.(type) {
 		case time.Time:
+			// Arrow timestamps are represented as int64 units from epoch.
 			b.Append(arrow.Timestamp(v.UTC().UnixMicro()))
 		case int64:
 			b.Append(arrow.Timestamp(v))

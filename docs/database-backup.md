@@ -8,8 +8,13 @@ This document provides a technical explanation of how `gomigrate` handles databa
 
 The backup process is designed as a streaming pipeline to ensure minimal memory footprint even when handling terabytes of data.
 
-```text
-[ Source DB ] -> [ Reader Pool ] -> [ Chunk Manager ] -> [ Serializer ] -> [ Compressor ] -> [ Storage ]
+```mermaid
+graph LR
+    A[Source DB] --> B[Reader Pool]
+    B --> C[Chunk Manager]
+    C --> D[Serializer]
+    D --> E[Compressor]
+    E --> F[Storage]
 ```
 
 1.  **Partitioning**: `gomigrate` first analyzes the table (e.g., using primary keys or row IDs) to split it into logical "partitions".

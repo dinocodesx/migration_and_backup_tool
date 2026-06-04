@@ -13,22 +13,48 @@ This document provides an extreme-detail technical breakdown of how `gomigrate` 
 3.  **Loading (Writer Phase)**: Pushing processed data into the target.
 
 ### Pipeline Diagram
-```text
-[Source DB] 
-     ↓
-[Reader 1] [Reader 2] ... [Reader N]  (Parallel Extraction)
-     ↓          ↓              ↓
-     +----------+--------------+
-                ↓
-          [recordCh]                  (Internal Record Format)
-                ↓
-    [Transformer 1] [Transformer 2]   (Schema Mapping & Coercion)
-                ↓
-           [batchCh]                  (Batched Records)
-                ↓
-[Writer 1] [Writer 2] ... [Writer M]  (Parallel Loading)
-     ↓          ↓              ↓
-[Target DB]
+```mermaid
+graph TD
+    Source[(Source DB)]
+    
+    subgraph Extraction [Parallel Extraction]
+        R1[Reader 1]
+        R2[Reader 2]
+        RN[...]
+    end
+    
+    Source --> R1
+    Source --> R2
+    Source --> RN
+    
+    R1 --> recordCh[[recordCh]]
+    R2 --> recordCh
+    RN --> recordCh
+    
+    subgraph Transformation [Schema Mapping & Coercion]
+        T1[Transformer 1]
+        T2[Transformer 2]
+    end
+    
+    recordCh --> T1
+    recordCh --> T2
+    
+    T1 --> batchCh[[batchCh]]
+    T2 --> batchCh
+    
+    subgraph Loading [Parallel Loading]
+        W1[Writer 1]
+        W2[Writer 2]
+        WM[...]
+    end
+    
+    batchCh --> W1
+    batchCh --> W2
+    batchCh --> WM
+    
+    W1 --> Target[(Target DB)]
+    W2 --> Target
+    WM --> Target
 ```
 
 ---
