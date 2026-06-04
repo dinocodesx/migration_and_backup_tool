@@ -1046,13 +1046,13 @@ masking:
 
 ### Phase 4 — Cassandra Adapter (Weeks 7–8)
 
-- [ ] `adapter/cassandra/reader.go`: token-range partitioner.
-- [ ] `adapter/cassandra/writer.go`: unlogged batch writer.
-- [ ] `adapter/cassandra/schema.go`: CQL `DESCRIBE TABLE`.
-- [ ] Type mapping for Cassandra collections.
-- [ ] `gomigrate migrate` Postgres ↔ Cassandra, Mongo ↔ Cassandra.
-- [ ] Backup/restore for Cassandra.
-- [ ] Integration tests.
+- [x] `adapter/cassandra/reader.go`: token-range partitioner.
+- [x] `adapter/cassandra/writer.go`: unlogged batch writer.
+- [x] `adapter/cassandra/schema.go`: CQL `DESCRIBE TABLE`.
+- [x] Type mapping for Cassandra collections.
+- [x] `gomigrate migrate` Postgres ↔ Cassandra, Mongo ↔ Cassandra.
+- [x] Backup/restore for Cassandra.
+- [x] Integration tests.
 
 **Deliverable:** Cassandra fully supported as source and target.
 

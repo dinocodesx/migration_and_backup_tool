@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/dinocodesx/gomigrate/internal/adapter"
+	"github.com/dinocodesx/gomigrate/internal/adapter/cassandra"
 	"github.com/dinocodesx/gomigrate/internal/adapter/mongo"
 	"github.com/dinocodesx/gomigrate/internal/adapter/postgres"
 )
@@ -15,6 +16,8 @@ func NewSourceAdapter(dbType string) (adapter.SourceAdapter, error) {
 		return postgres.NewPostgresAdapter(), nil
 	case "mongo", "mongodb":
 		return mongo.NewMongoAdapter(), nil
+	case "cassandra":
+		return cassandra.NewCassandraAdapter(), nil
 	default:
 		return nil, fmt.Errorf("unsupported source database type: %s", dbType)
 	}
@@ -27,6 +30,8 @@ func NewTargetAdapter(dbType string) (adapter.TargetAdapter, error) {
 		return postgres.NewPostgresAdapter(), nil
 	case "mongo", "mongodb":
 		return mongo.NewMongoAdapter(), nil
+	case "cassandra":
+		return cassandra.NewCassandraAdapter(), nil
 	default:
 		return nil, fmt.Errorf("unsupported target database type: %s", dbType)
 	}
