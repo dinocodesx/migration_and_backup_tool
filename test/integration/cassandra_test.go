@@ -113,8 +113,8 @@ func TestCassandraToCassandraMigration(t *testing.T) {
 		BatchTimeout:    1 * time.Second,
 	}
 
-	mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
-	orch := pipeline.NewOrchestrator(concurrency, store, mapper, zap.NewNop())
+	mapper := migration.NewSchemaMapper(src.Type(), dst.Type(), nil)
+	orch := pipeline.NewOrchestrator(concurrency, store, mapper, nil, zap.NewNop())
 	if err := orch.Migrate(ctx, "test-op-cassandra", src, dst, "source_users"); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}

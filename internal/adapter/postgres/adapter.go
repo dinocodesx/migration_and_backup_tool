@@ -6,6 +6,8 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/dinocodesx/gomigrate/internal/adapter"
 	"github.com/dinocodesx/gomigrate/internal/config"
@@ -40,8 +42,40 @@ func (a *PostgresAdapter) Type() string { return "postgres" }
 // Connect establishes a connection pool to the PostgreSQL database using
 // the provided configuration. It verifies connectivity with a ping.
 func (a *PostgresAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
-		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
+	var dsn string
+
+	// If the caller passes a pre-built URL in Params["url"], use it directly.
+	// This is useful for tests and container-based setups.
+	if urlParam, ok := cfg.Params["url"]; ok && urlParam != "" {
+		dsn = urlParam
+	} else {
+		dsn = fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
+			cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
+
+		// Append extra parameters (like sslmode)
+		if len(cfg.Params) > 0 {
+			dsn += "?"
+			for k, v := range cfg.Params {
+				if k == "url" {
+					continue
+				}
+				dsn += fmt.Sprintf("%s=%s&", k, v)
+			}
+			dsn = dsn[:len(dsn)-1] // remove trailing &
+		} else {
+			// Default to require for security if no params provided
+			dsn += "?sslmode=require"
+		}
+	}
+
+	// Phase 6 security: warn on insecure TLS configuration.
+	if strings.Contains(dsn, "sslmode=disable") || strings.Contains(dsn, "sslmode=allow") {
+		// Log via standard library because the zap logger is not available here.
+		// The caller should treat this as a security warning.
+		fmt.Fprintf(os.Stderr, "[WARN] gomigrate/postgres: TLS disabled or weakened — "+
+			"insecure_skip_verify or sslmode=disable detected. "+
+			"Not recommended for production.\n")
+	}
 
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -50,13 +84,14 @@ func (a *PostgresAdapter) Connect(ctx context.Context, cfg config.DBConfig) erro
 
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return fmt.Errorf("failed to ping postgres at %s:%d: %w", cfg.Host, cfg.Port, err)
+		return fmt.Errorf("failed to ping postgres: %w", err)
 	}
 
 	a.pool = pool
 	a.reader = NewReader(pool)
 	return nil
 }
+
 
 // Partitions calculates logical primary key ranges for parallel reading.
 func (a *PostgresAdapter) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {

@@ -60,6 +60,15 @@ func (a *MongoAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 		}
 	}
 
+	// Append extra parameters
+	if len(cfg.Params) > 0 {
+		uri += "?"
+		for k, v := range cfg.Params {
+			uri += fmt.Sprintf("%s=%s&", k, v)
+		}
+		uri = uri[:len(uri)-1]
+	}
+
 	clientOptions := options.Client().ApplyURI(uri)
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {

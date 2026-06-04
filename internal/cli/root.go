@@ -5,9 +5,12 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"text/tabwriter"
 	"time"
 
 	"github.com/dinocodesx/gomigrate/internal/adapter"
@@ -15,9 +18,11 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/backup"
 	"github.com/dinocodesx/gomigrate/internal/checkpoint"
 	"github.com/dinocodesx/gomigrate/internal/config"
+	"github.com/dinocodesx/gomigrate/internal/errs"
 	"github.com/dinocodesx/gomigrate/internal/metrics"
 	"github.com/dinocodesx/gomigrate/internal/migration"
 	"github.com/dinocodesx/gomigrate/internal/pipeline"
+	"github.com/dinocodesx/gomigrate/internal/record"
 	"github.com/dinocodesx/gomigrate/internal/schema"
 	"github.com/dinocodesx/gomigrate/internal/storage"
 	"github.com/dinocodesx/gomigrate/internal/telemetry"
@@ -34,6 +39,12 @@ var (
 	manifestFile string
 	cfg          config.Config
 	logger       *zap.Logger
+
+	// tracerShutdown is called on process exit to flush OTel spans.
+	tracerShutdown telemetry.ShutdownFunc
+
+	// auditLog is the global structured audit trail.
+	auditLog *telemetry.AuditLog
 )
 
 // rootCmd is the entry point for the gomigrate CLI. It defines global flags
@@ -50,13 +61,50 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 		logger = initLogger(cfg.Telemetry)
+
+		// Initialise the OpenTelemetry tracer (no-op if endpoint is empty).
+		telemetry.SetVersion(Version)
+		var err error
+		tracerShutdown, err = telemetry.InitTracer(
+			cmd.Context(),
+			cfg.Telemetry.TracingEndpoint,
+			"gomigrate",
+		)
+		if err != nil {
+			logger.Warn("failed to initialise tracer", zap.Error(err))
+			tracerShutdown = func(_ context.Context) error { return nil }
+		}
+
+		// Initialise the audit log alongside the checkpoint file.
+		cpPath := cfg.Checkpoint.Path
+		if cpPath == "" {
+			cpPath = "checkpoint.bolt"
+		}
+		auditPath := filepath.Join(filepath.Dir(cpPath), "audit.jsonl")
+		al, err := telemetry.NewAuditLog(auditPath)
+		if err != nil {
+			logger.Warn("failed to open audit log", zap.Error(err), zap.String("path", auditPath))
+		} else {
+			auditLog = al
+		}
+
 		return nil
 	},
 }
 
 // Execute triggers the Cobra command execution pipeline.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	ctx := context.Background()
+	defer func() {
+		if tracerShutdown != nil {
+			_ = tracerShutdown(ctx)
+		}
+		if auditLog != nil {
+			_ = auditLog.Close()
+		}
+	}()
+
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -72,10 +120,13 @@ func init() {
 	rootCmd.AddCommand(restoreCmd)
 	rootCmd.AddCommand(verifyCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(replayCmd)
 	rootCmd.AddCommand(versionCmd)
 
 	restoreCmd.Flags().StringVar(&manifestFile, "manifest", "manifest.json", "path to backup manifest file")
 	verifyCmd.Flags().StringVar(&manifestFile, "manifest", "manifest.json", "path to backup manifest file")
+	replayCmd.Flags().String("failed-file", "", "path to the .ndjson file containing failed records")
+	statusCmd.Flags().String("checkpoint", "", "path to checkpoint bolt file (overrides config)")
 }
 
 // initConfig reads in the configuration file and maps environment variables.
@@ -98,6 +149,16 @@ func initConfig() {
 	} else {
 		fmt.Println("Using config file:", viper.ConfigFileUsed())
 	}
+}
+
+// configHash returns a hex SHA-256 of the marshalled config (secrets redacted).
+func configHash() string {
+	redacted := cfg
+	redacted.Source.Password = "[REDACTED]"
+	redacted.Target.Password = "[REDACTED]"
+	b, _ := json.Marshal(redacted)
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum)
 }
 
 // initStorage initializes the storage provider based on user configuration.
@@ -161,6 +222,17 @@ func initTargetAdapter(ctx context.Context) (adapter.TargetAdapter, error) {
 	return dst, nil
 }
 
+// writeAuditEntry writes a start/end audit entry, logging errors but not
+// propagating them so that an audit failure never blocks the operation.
+func writeAuditEntry(entry telemetry.AuditEntry) {
+	if auditLog == nil {
+		return
+	}
+	if err := auditLog.Write(entry); err != nil {
+		logger.Warn("failed to write audit entry", zap.Error(err))
+	}
+}
+
 // migrateCmd implements the database-to-database migration command.
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
@@ -171,7 +243,7 @@ var migrateCmd = &cobra.Command{
 // runMigrate orchestrates the migration execution flow.
 func runMigrate(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	defer logger.Sync()
+	defer logger.Sync() //nolint:errcheck
 
 	cpPath := cfg.Checkpoint.Path
 	if cpPath == "" {
@@ -182,6 +254,13 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer store.Close()
+
+	dlqPath := fmt.Sprintf("%s_failed.ndjson", cpPath)
+	dlq, err := errs.NewDLQ(dlqPath)
+	if err != nil {
+		return err
+	}
+	defer dlq.Close()
 
 	src, err := initSourceAdapter(ctx)
 	if err != nil {
@@ -200,6 +279,18 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 	table := cfg.Source.Tables[0]
 
+	startTime := time.Now()
+	writeAuditEntry(telemetry.AuditEntry{
+		Operation:  "migrate",
+		User:       telemetry.CurrentUser(),
+		Hostname:   telemetry.CurrentHostname(),
+		Source:     fmt.Sprintf("%s/%s", cfg.Source.Type, cfg.Source.Host),
+		Target:     fmt.Sprintf("%s/%s", cfg.Target.Type, cfg.Target.Host),
+		Tables:     cfg.Source.Tables,
+		StartTime:  startTime,
+		ConfigHash: configHash(),
+	})
+
 	s, err := src.Schema(ctx, table)
 	if err != nil {
 		return fmt.Errorf("failed to get source schema: %w", err)
@@ -208,8 +299,8 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to apply schema to target: %w", err)
 	}
 
-	mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
-	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, logger)
+	mapper := migration.NewSchemaMapper(src.Type(), dst.Type(), cfg.Migration.Masking)
+	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, dlq, logger)
 
 	if cfg.Telemetry.MetricsAddr != "" {
 		go func() {
@@ -226,8 +317,29 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		zap.String("operation_id", opID),
 	)
 
-	if err := orch.Migrate(ctx, opID, src, dst, table); err != nil {
-		return fmt.Errorf("migration failed: %w", err)
+	migErr := orch.Migrate(ctx, opID, src, dst, table)
+
+	outcome := "success"
+	errMsg := ""
+	if migErr != nil {
+		outcome = "failure"
+		errMsg = migErr.Error()
+	}
+	writeAuditEntry(telemetry.AuditEntry{
+		Operation: "migrate",
+		User:      telemetry.CurrentUser(),
+		Hostname:  telemetry.CurrentHostname(),
+		Source:    fmt.Sprintf("%s/%s", cfg.Source.Type, cfg.Source.Host),
+		Target:    fmt.Sprintf("%s/%s", cfg.Target.Type, cfg.Target.Host),
+		Tables:    cfg.Source.Tables,
+		StartTime: startTime,
+		EndTime:   time.Now(),
+		Outcome:   outcome,
+		Error:     errMsg,
+	})
+
+	if migErr != nil {
+		return fmt.Errorf("migration failed: %w", migErr)
 	}
 
 	logger.Info("migration completed successfully")
@@ -244,7 +356,7 @@ var backupCmd = &cobra.Command{
 // runBackup orchestrates the export execution flow.
 func runBackup(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	defer logger.Sync()
+	defer logger.Sync() //nolint:errcheck
 
 	src, err := initSourceAdapter(ctx)
 	if err != nil {
@@ -261,6 +373,17 @@ func runBackup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no tables specified in source config")
 	}
 	table := cfg.Source.Tables[0]
+
+	startTime := time.Now()
+	writeAuditEntry(telemetry.AuditEntry{
+		Operation:  "backup",
+		User:       telemetry.CurrentUser(),
+		Hostname:   telemetry.CurrentHostname(),
+		Source:     fmt.Sprintf("%s/%s", cfg.Source.Type, cfg.Source.Host),
+		Tables:     cfg.Source.Tables,
+		StartTime:  startTime,
+		ConfigHash: configHash(),
+	})
 
 	s, err := src.Schema(ctx, table)
 	if err != nil {
@@ -283,9 +406,32 @@ func runBackup(cmd *cobra.Command, args []string) error {
 
 	chunkSize := int64(cfg.Backup.ChunkSizeMB) * 1024 * 1024
 
-	manifest, err := engine.Backup(ctx, opID, src, table, chunkSize)
-	if err != nil {
-		return fmt.Errorf("backup failed: %w", err)
+	manifest, backupErr := engine.Backup(ctx, opID, src, table, chunkSize)
+
+	outcome := "success"
+	errMsg := ""
+	var rowCount int64
+	if backupErr != nil {
+		outcome = "failure"
+		errMsg = backupErr.Error()
+	} else {
+		rowCount = manifest.RowCount
+	}
+	writeAuditEntry(telemetry.AuditEntry{
+		Operation: "backup",
+		User:      telemetry.CurrentUser(),
+		Hostname:  telemetry.CurrentHostname(),
+		Source:    fmt.Sprintf("%s/%s", cfg.Source.Type, cfg.Source.Host),
+		Tables:    cfg.Source.Tables,
+		StartTime: startTime,
+		EndTime:   time.Now(),
+		Outcome:   outcome,
+		RowCount:  rowCount,
+		Error:     errMsg,
+	})
+
+	if backupErr != nil {
+		return fmt.Errorf("backup failed: %w", backupErr)
 	}
 
 	logger.Info("backup completed",
@@ -305,7 +451,7 @@ var restoreCmd = &cobra.Command{
 // runRestore orchestrates the import execution flow.
 func runRestore(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	defer logger.Sync()
+	defer logger.Sync() //nolint:errcheck
 
 	dst, err := initTargetAdapter(ctx)
 	if err != nil {
@@ -318,11 +464,40 @@ func runRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	startTime := time.Now()
+	writeAuditEntry(telemetry.AuditEntry{
+		Operation:  "restore",
+		User:       telemetry.CurrentUser(),
+		Hostname:   telemetry.CurrentHostname(),
+		Target:     fmt.Sprintf("%s/%s", cfg.Target.Type, cfg.Target.Host),
+		StartTime:  startTime,
+		ConfigHash: configHash(),
+	})
+
 	engine := backup.NewRestoreEngine(st, dst, logger)
 	logger.Info("starting restore", zap.String("manifest", manifestFile))
 
-	if err := engine.Restore(ctx, manifestFile); err != nil {
-		return fmt.Errorf("restore failed: %w", err)
+	restoreErr := engine.Restore(ctx, manifestFile)
+
+	outcome := "success"
+	errMsg := ""
+	if restoreErr != nil {
+		outcome = "failure"
+		errMsg = restoreErr.Error()
+	}
+	writeAuditEntry(telemetry.AuditEntry{
+		Operation: "restore",
+		User:      telemetry.CurrentUser(),
+		Hostname:  telemetry.CurrentHostname(),
+		Target:    fmt.Sprintf("%s/%s", cfg.Target.Type, cfg.Target.Host),
+		StartTime: startTime,
+		EndTime:   time.Now(),
+		Outcome:   outcome,
+		Error:     errMsg,
+	})
+
+	if restoreErr != nil {
+		return fmt.Errorf("restore failed: %w", restoreErr)
 	}
 
 	logger.Info("restore completed successfully")
@@ -377,13 +552,128 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// statusCmd is a reserved subcommand for future progress monitoring features.
+// replayCmd implements the dead-letter queue re-ingestion command.
+var replayCmd = &cobra.Command{
+	Use:   "replay",
+	Short: "Replay failed records from a DLQ file",
+	RunE:  runReplay,
+}
+
+func runReplay(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	defer logger.Sync() //nolint:errcheck
+
+	failedFile, _ := cmd.Flags().GetString("failed-file")
+	if failedFile == "" {
+		return fmt.Errorf("--failed-file is required")
+	}
+
+	f, err := os.Open(failedFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	dst, err := initTargetAdapter(ctx)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	logger.Info("replaying failed records", zap.String("file", failedFile))
+
+	dec := json.NewDecoder(f)
+	var batch []*record.Record
+	batchSize := cfg.Concurrency.BatchSize
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+
+	for dec.More() {
+		var dlqRec errs.DLQRecord
+		if err := dec.Decode(&dlqRec); err != nil {
+			return err
+		}
+
+		rec := &record.Record{
+			ID:   dlqRec.RecordID,
+			Data: dlqRec.Payload,
+			Metadata: record.RecordMetadata{
+				SourceTable: dlqRec.Table,
+			},
+		}
+		batch = append(batch, rec)
+
+		if len(batch) >= batchSize {
+			if _, err := dst.WriteBatch(ctx, batch); err != nil {
+				logger.Error("failed to replay batch", zap.Error(err))
+			}
+			batch = nil
+		}
+	}
+
+	if len(batch) > 0 {
+		if _, err := dst.WriteBatch(ctx, batch); err != nil {
+			logger.Error("failed to replay final batch", zap.Error(err))
+		}
+	}
+
+	logger.Info("replay completed")
+	return nil
+}
+
+// statusCmd reads a checkpoint file and renders a human-readable progress table.
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Check status of a checkpoint",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("status called")
-	},
+	Short: "Check status of an operation checkpoint",
+	RunE:  runStatus,
+}
+
+// runStatus prints a progress table from a bbolt checkpoint file.
+func runStatus(cmd *cobra.Command, args []string) error {
+	cpPath, _ := cmd.Flags().GetString("checkpoint")
+	if cpPath == "" {
+		cpPath = cfg.Checkpoint.Path
+	}
+	if cpPath == "" {
+		cpPath = "checkpoint.bolt"
+	}
+
+	store, err := checkpoint.NewStore(cpPath)
+	if err != nil {
+		return fmt.Errorf("cannot open checkpoint at %q: %w", cpPath, err)
+	}
+	defer store.Close()
+
+	// We list all partitions by scanning a synthetic prefix. Since we don't
+	// know the operation IDs up front, we scan with an empty prefix.
+	// The bbolt store's ListPartitions needs an opID; use an empty string
+	// to trigger a full bucket scan (all keys start with "").
+	partitions, err := store.ListPartitions("")
+	if err != nil {
+		return fmt.Errorf("failed to list partitions: %w", err)
+	}
+
+	if len(partitions) == 0 {
+		fmt.Println("No checkpoint data found.")
+		return nil
+	}
+
+	// Group by a synthetic "operation" (partition ID prefix up to first ':')
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "PARTITION ID\tSTATUS\tROWS WRITTEN\tERRORS\tLAST UPDATED")
+	fmt.Fprintln(w, "────────────\t──────\t────────────\t──────\t────────────")
+	for _, p := range partitions {
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\n",
+			p.PartitionID,
+			p.Status,
+			p.RowsWritten,
+			p.ErrorCount,
+			p.UpdatedAt.Format(time.RFC3339),
+		)
+	}
+	_ = w.Flush()
+	return nil
 }
 
 // versionCmd displays the current version information.
