@@ -1060,14 +1060,32 @@ masking:
 
 ### Phase 5 — Iceberg Adapter (Weeks 9–10)
 
-- [ ] `adapter/iceberg/reader.go`: REST catalog + Parquet file scanner.
-- [ ] `adapter/iceberg/writer.go`: Parquet file writer + snapshot commit.
-- [ ] `adapter/iceberg/schema.go`: Iceberg schema type mapping.
-- [ ] `gomigrate migrate` Postgres → Iceberg and Iceberg → Postgres.
-- [ ] Backup/restore for Iceberg (snapshot-based).
-- [ ] Integration tests (using local catalog + MinIO).
+#### 5.1 Infrastructure & Catalog Client
+- [x] Update `docker-compose.yml` with a local Iceberg environment (e.g., Tabular's REST Catalog or Apache Polaris + MinIO for S3-compatible storage).
+- [x] `adapter/iceberg/catalog.go`: Implement a REST Catalog client to handle authentication, table lookups, and metadata retrieval.
+- [x] `adapter/iceberg/schema.go`: Define mapping between Iceberg types (structs, lists, maps, timestamps) and the canonical `record.Record`.
 
-**Deliverable:** Iceberg fully supported as source and target.
+#### 5.2 Source Adapter (Reading)
+- [x] `adapter/iceberg/reader.go`:
+    - [x] Implement `Partitions`: Fetch the latest snapshot metadata and map each Parquet data file to a `Partition`.
+    - [x] Implement `ReadPartition`: Stream records from S3/GCS Parquet files using `apache/arrow-go`.
+    - [x] Handle schema evolution by reconciling file-level schema with the current table schema.
+
+#### 5.3 Target Adapter (Writing)
+- [x] `adapter/iceberg/writer.go`:
+    - [x] `ApplySchema`: Create Iceberg table via Catalog REST API if it doesn't exist.
+    - [x] `WriteBatch`: Serialize records to Parquet files in a temporary storage location.
+    - [x] Flush logic: Finalize Parquet file, compute statistics, and upload to the final data location.
+    - [x] Snapshot Commit: Atomic update to the REST Catalog using optimistic concurrency (handling `CommitFailedException`).
+
+#### 5.4 Testing & Integration
+- [x] Implement snapshot-based backup/restore: Map Iceberg snapshots to `gomigrate` manifests for point-in-time recovery.
+- [ ] `test/integration/iceberg_test.go`:
+    - [ ] Postgres → Iceberg migration with complex types.
+    - [ ] Iceberg → Postgres migration (round-trip).
+    - [ ] Resumability test: Interrupting a large Iceberg write and ensuring the Catalog remains consistent.
+
+**Deliverable:** Iceberg fully supported as source and target with REST Catalog integration.
 
 ---
 
