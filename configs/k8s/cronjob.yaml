@@ -1,0 +1,86 @@
+# Kubernetes CronJob manifest for scheduled gomigrate backups.
+#
+# Usage:
+#   kubectl apply -f cronjob.yaml
+#
+# This CronJob runs 'gomigrate backup' on a configurable schedule.
+# By default it runs daily at 02:00 UTC.
+#
+# Prerequisites (same as job.yaml):
+#   1. kubectl create configmap gomigrate-config --from-file=config.yaml=configs/example.yaml
+#   2. kubectl create secret generic gomigrate-secrets \
+#        --from-literal=PG_SOURCE_PASSWORD='...'
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gomigrate-backup
+  namespace: default
+  labels:
+    app.kubernetes.io/name: gomigrate
+    app.kubernetes.io/component: backup
+spec:
+  # Run daily at 02:00 UTC.
+  schedule: "0 2 * * *"
+  # Timezone support (Kubernetes 1.27+).
+  timeZone: "UTC"
+  # Only allow one backup to run at a time.
+  concurrencyPolicy: Forbid
+  # Keep the last 3 successful and 1 failed Job for debugging.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  # If the CronJob misses its scheduled time by more than 1 hour, skip that run.
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      # Automatically retry on pod failure, up to 2 times.
+      backoffLimit: 2
+      # Remove the Job (and its pods) 12 hours after completion.
+      ttlSecondsAfterFinished: 43200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: gomigrate
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: gomigrate
+              image: ghcr.io/dinocodesx/gomigrate:latest
+              imagePullPolicy: IfNotPresent
+              command: ["gomigrate", "backup"]
+              args:
+                - "--config=/etc/gomigrate/config.yaml"
+              env:
+                - name: GOMIGRATE_SOURCE_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: gomigrate-secrets
+                      key: PG_SOURCE_PASSWORD
+                - name: GOMIGRATE_TELEMETRY_TRACING_ENDPOINT
+                  value: "http://otel-collector.monitoring.svc.cluster.local:4318"
+                - name: GOMIGRATE_TELEMETRY_LOG_FORMAT
+                  value: "json"
+                - name: GOMIGRATE_TELEMETRY_LOG_LEVEL
+                  value: "info"
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "2"
+                  memory: "2Gi"
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/gomigrate
+                  readOnly: true
+                - name: checkpoint
+                  mountPath: /var/lib/gomigrate
+          volumes:
+            - name: config
+              configMap:
+                name: gomigrate-config
+            # For scheduled backups, a PersistentVolumeClaim is recommended to
+            # preserve the checkpoint across pods and enable resume on failure.
+            - name: checkpoint
+              emptyDir: {}

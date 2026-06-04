@@ -125,8 +125,8 @@ func TestPostgresToPostgresMigration(t *testing.T) {
 		t.Fatalf("failed to apply schema: %v", err)
 	}
 
-	mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
-	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, zap.NewNop())
+	mapper := migration.NewSchemaMapper(src.Type(), dst.Type(), nil)
+	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, nil, zap.NewNop())
 	if err := orch.Migrate(ctx, "test-op", src, dst, "source_users"); err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}

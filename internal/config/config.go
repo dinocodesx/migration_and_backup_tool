@@ -77,6 +77,16 @@ type MigrationConfig struct {
 	VerifyAfter bool `yaml:"verify_after"`
 	// VerifySamplePct is the percentage of records to sample for verification.
 	VerifySamplePct float64 `yaml:"verify_sample_pct"`
+	// Masking defines PII protection rules.
+	Masking []MaskingConfig `yaml:"masking"`
+}
+
+// MaskingConfig defines a strategy for protecting sensitive data in a specific column.
+type MaskingConfig struct {
+	// Column is the name of the field to protect.
+	Column string `yaml:"column"`
+	// Strategy is the protection algorithm (e.g., "sha256", "redact", "partial").
+	Strategy string `yaml:"strategy"`
 }
 
 // BackupConfig contains settings for exporting data to cloud or local storage.

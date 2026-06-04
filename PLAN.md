@@ -1080,10 +1080,10 @@ masking:
 
 #### 5.4 Testing & Integration
 - [x] Implement snapshot-based backup/restore: Map Iceberg snapshots to `gomigrate` manifests for point-in-time recovery.
-- [ ] `test/integration/iceberg_test.go`:
-    - [ ] Postgres → Iceberg migration with complex types.
-    - [ ] Iceberg → Postgres migration (round-trip).
-    - [ ] Resumability test: Interrupting a large Iceberg write and ensuring the Catalog remains consistent.
+- [x] `test/integration/iceberg_test.go`:
+    - [x] Postgres → Iceberg migration with complex types.
+    - [x] Iceberg → Postgres migration (round-trip).
+    - [x] Resumability test: Interrupting a large Iceberg write and ensuring the Catalog remains consistent.
 
 **Deliverable:** Iceberg fully supported as source and target with REST Catalog integration.
 
@@ -1091,13 +1091,14 @@ masking:
 
 ### Phase 6 — Hardening & Performance (Weeks 11–12)
 
-- [ ] Crash-and-resume e2e tests for all adapters.
-- [ ] Load test: 100M synthetic rows Postgres → Cassandra; tune defaults.
-- [ ] Dead-letter queue and `gomigrate replay` command.
-- [ ] Data masking transforms.
-- [ ] Vault secrets integration.
-- [ ] Security audit of TLS configurations.
-- [ ] Benchmark report (throughput per adapter pair, memory profile).
+- [x] Crash-and-resume e2e tests for all adapters (`test/e2e/migration_e2e_test.go`, `//go:build e2e`).
+- [x] Dead-letter queue and `gomigrate replay` command (fully wired in CLI, imports fixed).
+- [x] Data masking transforms (`schema_mapper.go` — sha256, redact, partial + unit tests).
+- [x] Full built-in transform library (`to_json_string`, `from_json_string`, `to_unix_ms`, `from_unix_ms`, `to_upper`, `to_lower`, `uuid_to_string`, `string_to_uuid`, `flatten_json`).
+- [x] Vault secrets integration (`internal/secrets/provider.go` + `vault.go` with AppRole auth).
+- [x] Security audit of TLS configurations (postgres adapter warns on `sslmode=disable`).
+- [ ] Load test: 100M synthetic rows Postgres → Cassandra; tune defaults. *(requires running infra)*
+- [ ] Benchmark report. *(requires running infra)*
 
 **Deliverable:** Production-ready v1.0.
 
@@ -1105,12 +1106,12 @@ masking:
 
 ### Phase 7 — Observability & Ops (Week 13)
 
-- [ ] OpenTelemetry tracing with span-per-partition.
-- [ ] Structured audit log.
-- [ ] `gomigrate status` reads live checkpoint and prints progress table.
-- [ ] Example Grafana dashboard JSON (Prometheus datasource).
-- [ ] Helm chart / Kubernetes manifests for running as a Job or CronJob.
-- [ ] Comprehensive README with quickstart, all CLI flags, config reference.
+- [x] OpenTelemetry tracing with span-per-partition (`internal/telemetry/tracer.go`, `orchestrator.go`).
+- [x] Structured audit log (`internal/telemetry/audit.go`; written at start+end of every operation).
+- [x] `gomigrate status` reads live checkpoint and prints progress table.
+- [x] Example Grafana dashboard JSON (`docs/grafana-dashboard.json`).
+- [x] Kubernetes manifests for Job and CronJob (`configs/k8s/job.yaml`, `configs/k8s/cronjob.yaml`).
+- [x] Comprehensive README with quickstart, all CLI flags, config reference, env vars table.
 
 **Deliverable:** Fully observable; ready for ops handoff.
 
