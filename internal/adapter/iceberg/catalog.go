@@ -10,52 +10,76 @@ import (
 	"time"
 )
 
-// CatalogClient handles interactions with the Iceberg REST Catalog.
+// CatalogClient handles HTTP interactions with the Iceberg REST Catalog.
+// It follows the Apache Iceberg REST OpenAPI specification for metadata
+// operations, table management, and atomic snapshot commits.
 type CatalogClient struct {
+	// BaseURL is the root endpoint of the Iceberg REST Catalog (e.g., http://localhost:8181).
 	BaseURL    string
+	// HTTPClient is used for executing REST requests with a configured timeout.
 	HTTPClient *http.Client
 }
 
-// TableResponse represents the metadata of an Iceberg table.
+// TableResponse represents the JSON response from the /v1/namespaces/{ns}/tables/{table} endpoint.
 type TableResponse struct {
+	// Metadata contains the actual table definition and current state.
 	Metadata       Metadata `json:"metadata"`
+	// MetadataLocation is the path to the current metadata JSON file.
 	MetadataLocation string   `json:"metadata-location"`
 }
 
-// Metadata contains the core table configuration and state.
+// Metadata contains the core Iceberg table configuration, including its
+// current schema, location, and snapshot history.
 type Metadata struct {
+	// Schema is the current active schema for the table.
 	Schema         IcebergSchema   `json:"schema"`
+	// Location is the base directory (on S3/GCS/Local) where data files are stored.
 	Location       string          `json:"location"`
+	// LastColumnID is used to assign unique IDs to new columns during schema evolution.
 	LastColumnID   int             `json:"last-column-id"`
+	// CurrentSnapshotID is the ID of the latest committed snapshot.
 	CurrentSnapshotID int64        `json:"current-snapshot-id"`
+	// Snapshots is a history of all point-in-time states of the table.
 	Snapshots      []Snapshot      `json:"snapshots"`
-	Manifests      []string        `json:"manifest-list,omitempty"` // simplified
+	// Manifests is a list of paths to manifest files (used for data discovery).
+	Manifests      []string        `json:"manifest-list,omitempty"`
 }
 
-// Snapshot represents a point-in-time state of the table.
+// Snapshot represents a single committed version of the table state.
 type Snapshot struct {
+	// SnapshotID is the unique identifier for this snapshot.
 	SnapshotID   int64             `json:"snapshot-id"`
+	// TimestampMS is when the snapshot was committed (UTC milliseconds).
 	TimestampMS  int64             `json:"timestamp-ms"`
+	// Summary contains metadata about the operation (e.g., "operation": "append").
 	Summary      map[string]string `json:"summary"`
+	// ManifestList is the path to the manifest list file for this snapshot.
 	ManifestList string            `json:"manifest-list"`
 }
 
-// IcebergSchema defines the Iceberg table schema structure.
+// IcebergSchema defines the structural definition of an Iceberg table.
 type IcebergSchema struct {
+	// Type is always "struct" for a table schema.
 	Type     string         `json:"type"`
+	// Fields is a list of columns defined in the table.
 	Fields   []IcebergField `json:"fields"`
+	// SchemaID is a unique identifier for this specific version of the schema.
 	SchemaID int            `json:"schema-id"`
 }
 
-// IcebergField represents a single field in an Iceberg schema.
+// IcebergField represents a single column within an Iceberg schema.
 type IcebergField struct {
+	// ID is the unique field identifier, used for stable schema evolution.
 	ID       int    `json:"id"`
+	// Name is the name of the column.
 	Name     string `json:"name"`
-	Type     any    `json:"type"` // Can be string or complex object
+	// Type can be a primitive string (e.g., "long") or a nested object (e.g., struct/list).
+	Type     any    `json:"type"`
+	// Required specifies if the field can contain null values.
 	Required bool   `json:"required"`
 }
 
-// NewCatalogClient creates a new client for the Iceberg REST Catalog.
+// NewCatalogClient initializes a new CatalogClient with a default HTTP timeout.
 func NewCatalogClient(baseURL string) *CatalogClient {
 	return &CatalogClient{
 		BaseURL: baseURL,
@@ -65,7 +89,7 @@ func NewCatalogClient(baseURL string) *CatalogClient {
 	}
 }
 
-// GetTable retrieves table metadata from the catalog.
+// GetTable fetches the full metadata of a specific Iceberg table from the catalog.
 func (c *CatalogClient) GetTable(ctx context.Context, namespace, table string) (*TableResponse, error) {
 	url := fmt.Sprintf("%s/v1/namespaces/%s/tables/%s", c.BaseURL, namespace, table)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -92,7 +116,8 @@ func (c *CatalogClient) GetTable(ctx context.Context, namespace, table string) (
 	return &tableResp, nil
 }
 
-// CreateTable creates a new Iceberg table via the catalog.
+// CreateTable registers a new table with the catalog. It expects a payload
+// containing the name, initial schema, and storage location.
 func (c *CatalogClient) CreateTable(ctx context.Context, namespace string, request any) error {
 	url := fmt.Sprintf("%s/v1/namespaces/%s/tables", c.BaseURL, namespace)
 	data, err := json.Marshal(request)
@@ -120,7 +145,8 @@ func (c *CatalogClient) CreateTable(ctx context.Context, namespace string, reque
 	return nil
 }
 
-// CommitSnapshot commits a new set of data files to a table.
+// CommitSnapshot pushes a new snapshot update to the catalog. This is an
+// atomic operation that adds the provided data files to the current table state.
 func (c *CatalogClient) CommitSnapshot(ctx context.Context, namespace, table string, commit any) error {
 	url := fmt.Sprintf("%s/v1/namespaces/%s/tables/%s/snapshots", c.BaseURL, namespace, table)
 	data, err := json.Marshal(commit)

@@ -4,7 +4,9 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
-// mapIcebergType translates Iceberg types to canonical gomigrate types.
+// mapIcebergType translates Iceberg primitive and complex types to canonical
+// gomigrate internal data types. This enables the system to map Iceberg
+// columns to relational database columns or NoSQL document fields.
 func mapIcebergType(icebergType any) string {
 	switch t := icebergType.(type) {
 	case string:
@@ -25,6 +27,7 @@ func mapIcebergType(icebergType any) string {
 			return "string"
 		}
 	case map[string]any:
+		// Handle complex Iceberg types (structs, lists, maps, decimals).
 		if typeVal, ok := t["type"].(string); ok {
 			switch typeVal {
 			case "struct":
@@ -41,7 +44,8 @@ func mapIcebergType(icebergType any) string {
 	return "string"
 }
 
-// ConvertToCanonicalSchema converts an Iceberg table schema to the gomigrate internal representation.
+// ConvertToCanonicalSchema transforms an Iceberg-specific schema definition
+// into the gomigrate universal schema model.
 func ConvertToCanonicalSchema(is IcebergSchema, tableName string) *schema.Schema {
 	s := &schema.Schema{Name: tableName}
 	for _, field := range is.Fields {
@@ -54,7 +58,8 @@ func ConvertToCanonicalSchema(is IcebergSchema, tableName string) *schema.Schema
 	return s
 }
 
-// mapToIcebergType translates canonical gomigrate types to Iceberg-compatible type definitions.
+// mapToIcebergType converts a canonical gomigrate type back to its closest
+// Iceberg-compatible representation for table creation and ingestion.
 func mapToIcebergType(canonicalType string) any {
 	switch canonicalType {
 	case "int64":
@@ -68,17 +73,19 @@ func mapToIcebergType(canonicalType string) any {
 	case "blob":
 		return "binary"
 	case "map":
-		// Simplified struct representation for map types
-		return "string" // Fallback for simplicity in v1
+		// Note: complex nesting is simplified to string in v1.
+		return "string"
 	case "array":
-		// Simplified list representation for array types
-		return "string" // Fallback for simplicity in v1
+		// Note: complex nesting is simplified to string in v1.
+		return "string"
 	default:
 		return "string"
 	}
 }
 
-// CreateIcebergSchema creates an Iceberg-compatible schema definition from a canonical schema.
+// CreateIcebergSchema generates an Iceberg-compatible schema definition from
+// a canonical gomigrate schema. It assigns sequential field IDs as required
+// by the Iceberg specification.
 func CreateIcebergSchema(s *schema.Schema) IcebergSchema {
 	is := IcebergSchema{
 		Type:     "struct",
@@ -87,6 +94,7 @@ func CreateIcebergSchema(s *schema.Schema) IcebergSchema {
 	}
 
 	for i, col := range s.Columns {
+		// Field IDs must be unique and stable for Iceberg schema evolution.
 		is.Fields[i] = IcebergField{
 			ID:       i + 1,
 			Name:     col.Name,
