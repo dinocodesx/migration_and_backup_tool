@@ -6,32 +6,46 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/schema"
 )
 
-// Manifest represents the index of a completed backup.
-// It acts as the "root of trust" and the roadmap for any subsequent restoration or verification.
-// If the manifest is lost, the backup chunks become difficult to assemble correctly.
+// Manifest represents the metadata and file structure of a completed backup.
+// It acts as the "root of trust" for restoration and integrity verification,
+// documenting exactly what data was backed up and how it is organized.
 type Manifest struct {
-	Version        int            `json:"version"`          // Schema version of the manifest itself.
-	OperationID    string         `json:"operation_id"`     // Unique ID of the backup operation.
-	Source         SourceMetadata `json:"source"`           // Details about where the data came from.
-	CreatedAt      time.Time      `json:"created_at"`       // Timestamp when the backup was finalized.
-	RowCount       int64          `json:"row_count"`        // Total records across all chunks.
-	ChunkSizeBytes int64          `json:"chunk_size_bytes"` // Configured size threshold for chunks.
-	Chunks         []Chunk        `json:"chunks"`           // Ordered list of chunk files and their metadata.
-	SchemaSnapshot schema.Schema  `json:"schema_snapshot"`  // Exact schema of the table at backup time.
+	// Version is the schema version of the manifest format itself.
+	Version int `json:"version"`
+	// OperationID is the unique identifier of the backup job.
+	OperationID string `json:"operation_id"`
+	// Source contains provenance information about the origin database.
+	Source SourceMetadata `json:"source"`
+	// CreatedAt is the UTC timestamp when the backup was finalized.
+	CreatedAt time.Time `json:"created_at"`
+	// RowCount is the total number of records across all backup chunks.
+	RowCount int64 `json:"row_count"`
+	// ChunkSizeBytes is the configured size threshold used for chunking.
+	ChunkSizeBytes int64 `json:"chunk_size_bytes"`
+	// Chunks is an ordered list of data files and their integrity hashes.
+	Chunks []Chunk `json:"chunks"`
+	// SchemaSnapshot is the exact structural definition of the table at backup time.
+	SchemaSnapshot schema.Schema `json:"schema_snapshot"`
 }
 
-// SourceMetadata contains provenance information about the database source.
+// SourceMetadata documents the origin of the backed-up data.
 type SourceMetadata struct {
-	Type  string `json:"type"`  // Source adapter type (e.g., "postgres", "mongo").
-	DB    string `json:"db"`    // Name of the database.
-	Table string `json:"table"` // Name of the table.
+	// Type is the source database engine (e.g., "postgres").
+	Type string `json:"type"`
+	// DB is the name of the source database.
+	DB string `json:"db"`
+	// Table is the name of the backed-up table.
+	Table string `json:"table"`
 }
 
-// Chunk represents a single data file in the backup.
-// It includes a SHA256 checksum for end-to-end integrity verification.
+// Chunk describes a single data artifact within a multi-file backup.
 type Chunk struct {
-	Index    int    `json:"index"`     // Sequence number (0, 1, 2...).
-	File     string `json:"file"`      // Filename relative to the manifest location.
-	RowCount int64  `json:"row_count"` // Number of records in this specific chunk.
-	SHA256   string `json:"sha256"`    // Checksum for integrity validation.
+	// Index is the sequence number of the chunk (0-indexed).
+	Index int `json:"index"`
+	// File is the relative path/name of the chunk artifact in storage.
+	File string `json:"file"`
+	// RowCount is the number of records contained in this specific chunk.
+	RowCount int64 `json:"row_count"`
+	// SHA256 is the hexadecimal integrity hash of the chunk file.
+	SHA256 string `json:"sha256"`
 }

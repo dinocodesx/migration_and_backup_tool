@@ -1,3 +1,6 @@
+// Package checkpoint implements persistent progress tracking for gomigrate.
+// It uses bbolt (an embedded key-value store) to ensure that migration state
+// survives application crashes and allows for efficient job resumption.
 package checkpoint
 
 import (
@@ -10,22 +13,24 @@ import (
 )
 
 var (
-	bucketMeta       = []byte("meta")
+	// bucketMeta stores global OperationMeta objects.
+	bucketMeta = []byte("meta")
+	// bucketPartitions stores PartitionCheckpoint objects, keyed by opID:partitionID.
 	bucketPartitions = []byte("partitions")
 
-	// ErrCheckpointNotFound is returned when a requested checkpoint does not exist.
+	// ErrCheckpointNotFound is returned when a requested record is missing from the store.
 	ErrCheckpointNotFound = fmt.Errorf("checkpoint not found")
 )
 
-// Store is a bbolt-backed checkpoint store.
-// It is safe for concurrent use; bbolt serialises writes internally.
+// Store provides a high-level API for managing checkpoint data. It handles
+// bucket initialization and provides thread-safe access to bbolt.
 type Store struct {
+	// db is the underlying bbolt database instance.
 	db *bbolt.DB
 }
 
-// NewStore opens (or creates) a bbolt database at the given path.
-// The file is opened with a 1-second timeout so that a stale lock from a
-// previous crashed process does not block forever.
+// NewStore opens a bbolt database at the specified path and initializes
+// the required buckets. It uses a 1-second timeout to prevent blocking on stale locks.
 func NewStore(path string) (*Store, error) {
 	db, err := bbolt.Open(path, 0600, &bbolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
@@ -42,25 +47,19 @@ func NewStore(path string) (*Store, error) {
 		return nil
 	})
 	if err != nil {
-		if closeErr := db.Close(); closeErr != nil {
-			return nil, fmt.Errorf("failed to initialize buckets: %v; close error: %w", err, closeErr)
-		}
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize buckets: %w", err)
 	}
 
 	return &Store{db: db}, nil
 }
 
-// Close closes the underlying database.
+// Close releases the lock on the bbolt database file.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// --------------------------------------------------------------------------
-// Meta
-// --------------------------------------------------------------------------
-
-// SaveMeta persists the top-level operation metadata.
+// SaveMeta persists global operation metadata.
 func (s *Store) SaveMeta(meta OperationMeta) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketMeta)
@@ -72,7 +71,7 @@ func (s *Store) SaveMeta(meta OperationMeta) error {
 	})
 }
 
-// GetMeta retrieves the metadata for an operation.
+// GetMeta retrieves global metadata for a specific operation ID.
 func (s *Store) GetMeta(opID string) (*OperationMeta, error) {
 	var meta OperationMeta
 	err := s.db.View(func(tx *bbolt.Tx) error {
@@ -89,11 +88,7 @@ func (s *Store) GetMeta(opID string) (*OperationMeta, error) {
 	return &meta, nil
 }
 
-// --------------------------------------------------------------------------
-// Partition checkpoints
-// --------------------------------------------------------------------------
-
-// SavePartition persists or updates a single partition checkpoint.
+// SavePartition persists the progress of a specific partition.
 func (s *Store) SavePartition(opID string, cp PartitionCheckpoint) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketPartitions)
@@ -105,8 +100,7 @@ func (s *Store) SavePartition(opID string, cp PartitionCheckpoint) error {
 	})
 }
 
-// GetPartition retrieves a single partition checkpoint.
-// Returns ErrCheckpointNotFound if no checkpoint exists for (opID, partitionID).
+// GetPartition retrieves the current progress of a specific partition.
 func (s *Store) GetPartition(opID, partitionID string) (*PartitionCheckpoint, error) {
 	var cp PartitionCheckpoint
 	err := s.db.View(func(tx *bbolt.Tx) error {
@@ -125,8 +119,7 @@ func (s *Store) GetPartition(opID, partitionID string) (*PartitionCheckpoint, er
 	return &cp, nil
 }
 
-// ListPartitions returns all partition checkpoints for an operation.
-// This is required by the resume logic (PLAN §9.2).
+// ListPartitions returns all progress records associated with a specific operation ID.
 func (s *Store) ListPartitions(opID string) ([]PartitionCheckpoint, error) {
 	prefix := partitionKeyPrefix(opID)
 	var checkpoints []PartitionCheckpoint
@@ -152,7 +145,7 @@ func (s *Store) ListPartitions(opID string) ([]PartitionCheckpoint, error) {
 	return checkpoints, nil
 }
 
-// SaveStatus updates only the status field of an existing partition checkpoint.
+// SaveStatus updates only the operational state of a partition.
 func (s *Store) SaveStatus(opID, partitionID string, status PartitionStatus) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketPartitions)
@@ -178,22 +171,18 @@ func (s *Store) SaveStatus(opID, partitionID string, status PartitionStatus) err
 	})
 }
 
-// DeleteOperation removes all checkpoint data for the given operation (meta + all partitions).
-// Used by the GC to clean up completed or stale operations.
+// DeleteOperation wipes all data (metadata and partition progress) for an operation.
 func (s *Store) DeleteOperation(opID string) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
-		// Delete meta entry.
 		if err := tx.Bucket(bucketMeta).Delete([]byte(opID)); err != nil {
 			return err
 		}
 
-		// Delete all partition entries with this prefix.
 		prefix := partitionKeyPrefix(opID)
 		b := tx.Bucket(bucketPartitions)
 		c := b.Cursor()
 		var keysToDelete [][]byte
 		for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
-			// Copy key bytes — cursor is invalidated after Delete.
 			kCopy := make([]byte, len(k))
 			copy(kCopy, k)
 			keysToDelete = append(keysToDelete, kCopy)
@@ -207,17 +196,10 @@ func (s *Store) DeleteOperation(opID string) error {
 	})
 }
 
-// --------------------------------------------------------------------------
-// Helpers
-// --------------------------------------------------------------------------
-
-// partitionKey returns the bbolt key for a (opID, partitionID) pair.
 func partitionKey(opID, partitionID string) []byte {
 	return []byte(opID + ":" + partitionID)
 }
 
-// partitionKeyPrefix returns the key prefix used to iterate all partitions
-// belonging to opID.
 func partitionKeyPrefix(opID string) []byte {
 	return []byte(opID + ":")
 }

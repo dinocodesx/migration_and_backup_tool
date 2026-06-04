@@ -1,5 +1,6 @@
-// Package cli provides the command-line interface for gomigrate.
-// It uses cobra for command management and viper for configuration.
+// Package cli implements the command-line interface for the gomigrate tool.
+// It uses Cobra for command-line parsing and Viper for flexible configuration
+// management (supporting environment variables and YAML/JSON files).
 package cli
 
 import (
@@ -25,38 +26,35 @@ import (
 	"go.uber.org/zap"
 )
 
-// Version follows semantic versioning for releases.
+// Version is the current semantic version of the gomigrate application.
 const Version = "v0.0.1-alpha"
 
 var (
-	cfgFile      string        // Path to the configuration file provided via flag.
-	manifestFile string        // Path to the manifest file for restore/verify operations.
-	cfg          config.Config // Global configuration object populated by Viper.
-	logger       *zap.Logger   // Global structured logger.
+	cfgFile      string
+	manifestFile string
+	cfg          config.Config
+	logger       *zap.Logger
 )
 
-// rootCmd represents the base command when called without any subcommands.
+// rootCmd is the entry point for the gomigrate CLI. It defines global flags
+// and persistent pre-run logic for all subcommands.
 var rootCmd = &cobra.Command{
 	Use:     "gomigrate",
 	Version: Version,
 	Short:   "A production-grade database migration and backup tool",
 	Long: `GoMigrate is a concurrent, resumable tool for migrating and backing up
-	large-scale database workloads (100M+ records). It supports multiple database
+	large-scale database workloads. It supports multiple database
 	engines and storage backends with built-in checkpointing.`,
-	// PersistentPreRunE executes after flags are parsed but before subcommands run.
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Unmarshal the viper-loaded config into our internal config struct.
 		if err := viper.Unmarshal(&cfg); err != nil {
 			return fmt.Errorf("failed to unmarshal config: %w", err)
 		}
-		// Initialize the logger based on telemetry settings.
 		logger = initLogger(cfg.Telemetry)
 		return nil
 	},
 }
 
-// Execute adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
+// Execute triggers the Cobra command execution pipeline.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -65,13 +63,10 @@ func Execute() {
 }
 
 func init() {
-	// Initialize configuration loading.
 	cobra.OnInitialize(initConfig)
 
-	// Global persistent flags.
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ./config.yaml)")
 
-	// Register subcommands.
 	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(restoreCmd)
@@ -79,26 +74,22 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(versionCmd)
 
-	// Flag registration for specific subcommands.
 	restoreCmd.Flags().StringVar(&manifestFile, "manifest", "manifest.json", "path to backup manifest file")
 	verifyCmd.Flags().StringVar(&manifestFile, "manifest", "manifest.json", "path to backup manifest file")
 }
 
-// initConfig reads in config file and ENV variables if set.
+// initConfig reads in the configuration file and maps environment variables.
 func initConfig() {
 	if cfgFile != "" {
-		// Use config file from the flag.
 		viper.SetConfigFile(cfgFile)
 	} else {
-		// Search for "config.yaml" or "config.json" in the current directory.
 		viper.AddConfigPath(".")
 		viper.SetConfigName("config")
 	}
 
-	viper.AutomaticEnv() // Read in environment variables that match.
+	viper.AutomaticEnv()
 	viper.SetEnvPrefix("GOMIGRATE")
 
-	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			fmt.Fprintf(os.Stderr, "Error reading config file (%s): %v\n", viper.ConfigFileUsed(), err)
@@ -109,7 +100,7 @@ func initConfig() {
 	}
 }
 
-// initStorage initializes the storage backend (local, s3, gcs) based on configuration.
+// initStorage initializes the storage provider based on user configuration.
 func initStorage(ctx context.Context, sc config.StorageConfig) (storage.Storage, error) {
 	switch sc.Type {
 	case "local":
@@ -125,7 +116,7 @@ func initStorage(ctx context.Context, sc config.StorageConfig) (storage.Storage,
 	}
 }
 
-// initSerializer initializes the backup data serializer (parquet, ndjson).
+// initSerializer initializes the requested data serializer.
 func initSerializer(format string, s *schema.Schema, batchSize int) (backup.Serializer, error) {
 	switch format {
 	case "parquet":
@@ -137,17 +128,16 @@ func initSerializer(format string, s *schema.Schema, batchSize int) (backup.Seri
 	}
 }
 
-// initLogger builds a zap logger from the telemetry config.
+// initLogger initializes the global structured logger.
 func initLogger(tc config.TelemetryConfig) *zap.Logger {
 	l, err := telemetry.NewLogger(tc.LogLevel, tc.LogFormat)
 	if err != nil {
-		// Fallback to a no-op logger to ensure the application continues.
 		return zap.NewNop()
 	}
 	return l
 }
 
-// initSourceAdapter creates and connects a source database adapter.
+// initSourceAdapter creates and connects to the source database.
 func initSourceAdapter(ctx context.Context) (adapter.SourceAdapter, error) {
 	src, err := factory.NewSourceAdapter(cfg.Source.Type)
 	if err != nil {
@@ -159,7 +149,7 @@ func initSourceAdapter(ctx context.Context) (adapter.SourceAdapter, error) {
 	return src, nil
 }
 
-// initTargetAdapter creates and connects a target database adapter.
+// initTargetAdapter creates and connects to the destination database.
 func initTargetAdapter(ctx context.Context) (adapter.TargetAdapter, error) {
 	dst, err := factory.NewTargetAdapter(cfg.Target.Type)
 	if err != nil {
@@ -171,19 +161,18 @@ func initTargetAdapter(ctx context.Context) (adapter.TargetAdapter, error) {
 	return dst, nil
 }
 
-// migrateCmd handles database-to-database migrations.
+// migrateCmd implements the database-to-database migration command.
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Migrate data between databases",
 	RunE:  runMigrate,
 }
 
-// runMigrate orchestrates the migration process.
+// runMigrate orchestrates the migration execution flow.
 func runMigrate(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	defer logger.Sync() //nolint:errcheck
+	defer logger.Sync()
 
-	// 1. Initialize checkpoint store (BoltDB) to track progress.
 	cpPath := cfg.Checkpoint.Path
 	if cpPath == "" {
 		cpPath = "checkpoint.bolt"
@@ -194,7 +183,6 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	// 2. Initialize database adapters.
 	src, err := initSourceAdapter(ctx)
 	if err != nil {
 		return err
@@ -207,13 +195,11 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	}
 	defer dst.Close()
 
-	// 3. Select the table to migrate (Phase 1 currently supports one table at a time).
 	if len(cfg.Source.Tables) == 0 {
 		return fmt.Errorf("no tables specified in source config")
 	}
 	table := cfg.Source.Tables[0]
 
-	// 4. Fetch source schema and apply it to the target (Table Creation).
 	s, err := src.Schema(ctx, table)
 	if err != nil {
 		return fmt.Errorf("failed to get source schema: %w", err)
@@ -222,13 +208,9 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to apply schema to target: %w", err)
 	}
 
-	// 5. Initialize schema mapper for type conversion between different DB engines.
 	mapper := migration.NewSchemaMapper(src.Type(), dst.Type())
-
-	// 6. Setup the orchestrator with concurrency and retry logic.
 	orch := pipeline.NewOrchestrator(cfg.Concurrency, store, mapper, logger)
 
-	// 7. Start the metrics server if enabled.
 	if cfg.Telemetry.MetricsAddr != "" {
 		go func() {
 			if err := metrics.StartMetricsServer(cfg.Telemetry.MetricsAddr); err != nil {
@@ -238,7 +220,6 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		logger.Info("metrics server started", zap.String("addr", cfg.Telemetry.MetricsAddr))
 	}
 
-	// 8. Execute the migration.
 	opID := fmt.Sprintf("mig-%d", os.Getpid())
 	logger.Info("starting migration",
 		zap.String("table", table),
@@ -253,19 +234,18 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// backupCmd handles exporting database tables to storage (S3/GCS/Local).
+// backupCmd implements the database-to-storage export command.
 var backupCmd = &cobra.Command{
 	Use:   "backup",
 	Short: "Backup database to storage",
 	RunE:  runBackup,
 }
 
-// runBackup orchestrates the backup process.
+// runBackup orchestrates the export execution flow.
 func runBackup(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	defer logger.Sync() //nolint:errcheck
+	defer logger.Sync()
 
-	// 1. Initialize source and storage.
 	src, err := initSourceAdapter(ctx)
 	if err != nil {
 		return err
@@ -277,7 +257,6 @@ func runBackup(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 2. Select table and fetch schema.
 	if len(cfg.Source.Tables) == 0 {
 		return fmt.Errorf("no tables specified in source config")
 	}
@@ -288,7 +267,6 @@ func runBackup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get source schema: %w", err)
 	}
 
-	// 3. Initialize serializer (Parquet/NDJSON).
 	batchSize := cfg.Concurrency.BatchSize
 	if batchSize <= 0 {
 		batchSize = 1000
@@ -298,7 +276,6 @@ func runBackup(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 4. Run the backup engine.
 	numReaders := cfg.Concurrency.NumReaders
 	engine := backup.NewEngine(st, ser, logger, numReaders)
 	opID := fmt.Sprintf("bak-%d", os.Getpid())
@@ -318,19 +295,18 @@ func runBackup(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// restoreCmd handles importing data from storage back into a database.
+// restoreCmd implements the storage-to-database import command.
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "Restore database from backup",
 	RunE:  runRestore,
 }
 
-// runRestore orchestrates the restoration process.
+// runRestore orchestrates the import execution flow.
 func runRestore(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	defer logger.Sync() //nolint:errcheck
+	defer logger.Sync()
 
-	// 1. Initialize target database and storage source.
 	dst, err := initTargetAdapter(ctx)
 	if err != nil {
 		return err
@@ -342,7 +318,6 @@ func runRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 2. Execute restoration using the manifest roadmap.
 	engine := backup.NewRestoreEngine(st, dst, logger)
 	logger.Info("starting restore", zap.String("manifest", manifestFile))
 
@@ -354,14 +329,14 @@ func runRestore(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// verifyCmd checks if the backup files in storage match the manifest metadata.
+// verifyCmd implements the backup integrity verification command.
 var verifyCmd = &cobra.Command{
 	Use:   "verify",
 	Short: "Verify backup integrity",
 	RunE:  runVerify,
 }
 
-// runVerify performs integrity checks on existing backups.
+// runVerify performs consistency checks against a backup manifest.
 func runVerify(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
@@ -370,7 +345,6 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 1. Load and decode the manifest.
 	fmt.Printf("Verifying backup at %s...\n", manifestFile)
 	reader, err := st.Get(ctx, manifestFile)
 	if err != nil {
@@ -386,7 +360,6 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Manifest valid. Backup created at: %s, Rows: %d, Chunks: %d\n",
 		manifest.CreatedAt.Format(time.RFC3339), manifest.RowCount, len(manifest.Chunks))
 
-	// 2. Check existence of every chunk file listed in the manifest.
 	for _, chunk := range manifest.Chunks {
 		fmt.Printf("  Checking chunk %d (%s)... ", chunk.Index, chunk.File)
 		exists, err := st.Exists(ctx, chunk.File)
@@ -404,7 +377,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// statusCmd is a placeholder for checking operation checkpoints.
+// statusCmd is a reserved subcommand for future progress monitoring features.
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Check status of a checkpoint",
@@ -413,7 +386,7 @@ var statusCmd = &cobra.Command{
 	},
 }
 
-// versionCmd prints the application version.
+// versionCmd displays the current version information.
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version number of gomigrate",

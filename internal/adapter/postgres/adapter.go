@@ -1,3 +1,6 @@
+// Package postgres provides a production-grade PostgreSQL implementation of
+// the gomigrate adapter interfaces. It utilizes pgx/v5 for high-performance
+// connection pooling and bulk data operations.
 package postgres
 
 import (
@@ -12,22 +15,30 @@ import (
 )
 
 // PostgresAdapter implements both adapter.SourceAdapter and adapter.TargetAdapter.
+// it acts as a coordinator, delegating specific reading and writing tasks to
+// specialized Reader and Writer components while managing the connection pool.
 type PostgresAdapter struct {
-	pool        *pgxpool.Pool
-	reader      *Reader
-	writer      *Writer
-	tableSchema string // e.g. "public"
+	// pool is the pgx connection pool shared by readers and writers.
+	pool *pgxpool.Pool
+	// reader handles partition discovery and data extraction logic.
+	reader *Reader
+	// writer handles schema application and bulk data insertion.
+	writer *Writer
+	// tableSchema is the PostgreSQL schema name (e.g., "public").
+	tableSchema string
 }
 
-// NewPostgresAdapter creates an unconnected PostgresAdapter.
+// NewPostgresAdapter returns an uninitialized PostgresAdapter instance.
+// Default configuration sets the table schema to "public".
 func NewPostgresAdapter() *PostgresAdapter {
 	return &PostgresAdapter{tableSchema: "public"}
 }
 
-// Type returns the adapter's database identifier.
+// Type returns the adapter identifier "postgres".
 func (a *PostgresAdapter) Type() string { return "postgres" }
 
-// Connect opens a connection pool and validates connectivity.
+// Connect establishes a connection pool to the PostgreSQL database using
+// the provided configuration. It verifies connectivity with a ping.
 func (a *PostgresAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
@@ -44,47 +55,43 @@ func (a *PostgresAdapter) Connect(ctx context.Context, cfg config.DBConfig) erro
 
 	a.pool = pool
 	a.reader = NewReader(pool)
-	// Writer is created once per target table; it is initialised in ApplySchema or
-	// on first WriteBatch if ApplySchema has not been called yet.
 	return nil
 }
 
-// Partitions delegates to the Reader.
+// Partitions calculates logical primary key ranges for parallel reading.
 func (a *PostgresAdapter) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	return a.reader.Partitions(ctx, table, n)
 }
 
-// ReadPartition delegates to the Reader.
+// ReadPartition extracts all records from a specific PK range and sends them to a channel.
 func (a *PostgresAdapter) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
 	return a.reader.ReadPartition(ctx, p, ch)
 }
 
-// Schema introspects the given table using the configured tableSchema.
+// Schema introspects the PostgreSQL system catalogs to retrieve table metadata.
 func (a *PostgresAdapter) Schema(ctx context.Context, table string) (*schema.Schema, error) {
 	return GetSchema(ctx, a.pool, table, a.tableSchema)
 }
 
-// WriteBatch writes a batch of records to the target table.
-// If ApplySchema has not been called, the target table is inferred from the
-// first record's SourceTable metadata.
+// WriteBatch performs a bulk insert of records using the PostgreSQL COPY protocol.
+// It lazily initializes the internal Writer if one does not exist.
 func (a *PostgresAdapter) WriteBatch(ctx context.Context, batch []*record.Record) (int, error) {
 	if len(batch) == 0 {
 		return 0, nil
 	}
 	if a.writer == nil {
-		// Lazily initialise writer from the source table name.
 		a.writer = NewWriter(a.pool, batch[0].Metadata.SourceTable)
 	}
 	return a.writer.WriteBatch(ctx, batch)
 }
 
-// ApplySchema creates (or ensures) the target table and caches the writer.
+// ApplySchema creates the target table based on the provided canonical schema.
 func (a *PostgresAdapter) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	a.writer = NewWriter(a.pool, s.Name)
 	return a.writer.ApplySchema(ctx, s)
 }
 
-// Close releases all connections.
+// Close gracefully closes the connection pool.
 func (a *PostgresAdapter) Close() error {
 	if a.pool != nil {
 		a.pool.Close()

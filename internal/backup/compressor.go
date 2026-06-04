@@ -7,13 +7,15 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// Compressor provides a high-performance zstd compressed writer.
+// Compressor provides a high-performance stream compressor using the Zstandard algorithm.
+// It wraps a raw io.Writer and compresses data written to it on the fly.
 type Compressor struct {
+	// encoder is the underlying zstd stream encoder.
 	encoder *zstd.Encoder
 }
 
-// NewCompressor creates a new Compressor wrapping the provided writer.
-// It uses the SpeedDefault level, which provides a good balance between CPU usage and compression ratio.
+// NewCompressor initializes a new Compressor that writes compressed data to 'w'.
+// It uses the SpeedDefault level, balancing throughput and compression ratio.
 func NewCompressor(w io.Writer) (*Compressor, error) {
 	encoder, err := zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	if err != nil {
@@ -22,20 +24,19 @@ func NewCompressor(w io.Writer) (*Compressor, error) {
 	return &Compressor{encoder: encoder}, nil
 }
 
-// Write writes data through the compressor to the underlying writer.
-// The data is buffered internally and compressed according to the zstd algorithm.
+// Write compresses the provided byte slice and writes it to the underlying stream.
 func (c *Compressor) Write(p []byte) (n int, err error) {
 	return c.encoder.Write(p)
 }
 
-// Flush flushes the encoder's buffers to the underlying writer without closing the stream.
-// Useful for ensuring data is sent during long-running streaming operations.
+// Flush forces any buffered data to be compressed and written to the underlying stream.
+// It is useful for long-running processes to ensure data is periodically persisted.
 func (c *Compressor) Flush() error {
 	return c.encoder.Flush()
 }
 
-// Close finalizes the compression block and closes the encoder.
-// It MUST be called to write the zstd footer and ensure all data is flushed.
+// Close finalizes the compression block and releases resources. It must be called
+// to ensure the stream is valid and all data is written.
 func (c *Compressor) Close() error {
 	return c.encoder.Close()
 }

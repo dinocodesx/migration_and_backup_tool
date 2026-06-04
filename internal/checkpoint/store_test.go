@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+// TestStore_SaveAndGetPartition verifies that a single partition checkpoint
+// can be persisted and subsequently retrieved with its fields intact.
 func TestStore_SaveAndGetPartition(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	defer cleanup()
@@ -41,6 +43,8 @@ func TestStore_SaveAndGetPartition(t *testing.T) {
 	}
 }
 
+// TestStore_ListPartitions ensures that multiple partitions for the same job
+// are correctly aggregated, and that partitions from other jobs are excluded.
 func TestStore_ListPartitions(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	defer cleanup()
@@ -57,7 +61,6 @@ func TestStore_ListPartitions(t *testing.T) {
 		}
 	}
 
-	// Save one partition for a different operation — must not appear in list.
 	other := PartitionCheckpoint{PartitionID: "x", Status: StatusPending, UpdatedAt: time.Now().UTC()}
 	if err := store.SavePartition("other-op", other); err != nil {
 		t.Fatalf("SavePartition other: %v", err)
@@ -72,6 +75,8 @@ func TestStore_ListPartitions(t *testing.T) {
 	}
 }
 
+// TestStore_SaveStatus verifies that the state of an existing partition
+// can be updated independently of other fields.
 func TestStore_SaveStatus(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	defer cleanup()
@@ -95,6 +100,8 @@ func TestStore_SaveStatus(t *testing.T) {
 	}
 }
 
+// TestStore_GetPartitionNotFound verifies that querying a non-existent
+// partition returns a specific sentinel error.
 func TestStore_GetPartitionNotFound(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	defer cleanup()
@@ -105,6 +112,8 @@ func TestStore_GetPartitionNotFound(t *testing.T) {
 	}
 }
 
+// TestStore_DeleteOperation ensures that all data for a specific job
+// is wiped when DeleteOperation is called.
 func TestStore_DeleteOperation(t *testing.T) {
 	store, cleanup := newTestStore(t)
 	defer cleanup()
@@ -127,8 +136,7 @@ func TestStore_DeleteOperation(t *testing.T) {
 	}
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
+// newTestStore is a helper that creates a temporary Bolt database for isolation.
 func newTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "checkpoint_test_*")

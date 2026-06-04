@@ -1,3 +1,6 @@
+// Package pipeline implements the core execution model for data movement.
+// It uses a highly concurrent architecture based on the producer-consumer
+// pattern, leveraging Go's channels and goroutines for maximum throughput.
 package pipeline
 
 import (
@@ -16,20 +19,28 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Orchestrator coordinates the data migration pipeline.
+// Orchestrator manages the end-to-end execution of a migration job. It
+// coordinates the lifecycle of readers, transformers, and writers, and
+// ensures that progress is consistently persisted to the checkpoint store.
 type Orchestrator struct {
-	config     config.ConcurrencyConfig
+	// config defines the concurrency and batching parameters for the pipeline.
+	config config.ConcurrencyConfig
+	// checkpoint is the persistent store for tracking migration progress.
 	checkpoint *checkpoint.Store
-	mapper     *migration.SchemaMapper
-	logger     *zap.Logger
+	// mapper handles record transformation between source and target engines.
+	mapper *migration.SchemaMapper
+	// logger provides structured observability for the orchestration process.
+	logger *zap.Logger
 }
 
-// NewOrchestrator creates a new Orchestrator.
+// NewOrchestrator initializes a new Orchestrator with the specified dependencies.
 func NewOrchestrator(cfg config.ConcurrencyConfig, cp *checkpoint.Store, mapper *migration.SchemaMapper, logger *zap.Logger) *Orchestrator {
 	return &Orchestrator{config: cfg, checkpoint: cp, mapper: mapper, logger: logger}
 }
 
-// Migrate runs the full reader → transformer → writer pipeline for one table.
+// Migrate executes the full data pipeline for a specific table. It handles
+// partition discovery, initializes the multi-stage concurrent pipeline,
+// and blocks until all data is processed or a fatal error occurs.
 func (o *Orchestrator) Migrate(ctx context.Context, opID string, src adapter.SourceAdapter, dst adapter.TargetAdapter, table string) error {
 	partitions, err := src.Partitions(ctx, table, o.config.NumReaders)
 	if err != nil {
@@ -55,6 +66,7 @@ func (o *Orchestrator) Migrate(ctx context.Context, opID string, src adapter.Sou
 	return g.Wait()
 }
 
+// startReaders initializes the extraction stage of the pipeline.
 func (o *Orchestrator) startReaders(ctx context.Context, g *errgroup.Group, src adapter.SourceAdapter, partitions []adapter.Partition, table string, recordCh chan<- *record.Record) {
 	var wg sync.WaitGroup
 	for _, p := range partitions {
@@ -72,6 +84,7 @@ func (o *Orchestrator) startReaders(ctx context.Context, g *errgroup.Group, src 
 	}()
 }
 
+// runReader extracts records from a specific partition and streams them to the central channel.
 func (o *Orchestrator) runReader(ctx context.Context, src adapter.SourceAdapter, p adapter.Partition, recordCh chan<- *record.Record) error {
 	partCh := make(chan *record.Record, o.config.BatchSize)
 	readErrCh := make(chan error, 1)
@@ -84,7 +97,6 @@ func (o *Orchestrator) runReader(ctx context.Context, src adapter.SourceAdapter,
 		select {
 		case recordCh <- rec:
 		case <-ctx.Done():
-			// drain
 			for range partCh {
 			}
 			return ctx.Err()
@@ -93,6 +105,7 @@ func (o *Orchestrator) runReader(ctx context.Context, src adapter.SourceAdapter,
 	return <-readErrCh
 }
 
+// startTransformers initializes the transformation stage of the pipeline.
 func (o *Orchestrator) startTransformers(ctx context.Context, g *errgroup.Group, table string, recordCh <-chan *record.Record, batchCh chan<- []*record.Record) {
 	var wg sync.WaitGroup
 	for i := 0; i < o.config.NumTransformers; i++ {
@@ -108,6 +121,7 @@ func (o *Orchestrator) startTransformers(ctx context.Context, g *errgroup.Group,
 	}()
 }
 
+// runTransformer consumes individual records, applies transformations, and groups them into batches.
 func (o *Orchestrator) runTransformer(ctx context.Context, table string, recordCh <-chan *record.Record, batchCh chan<- []*record.Record) error {
 	var batch []*record.Record
 	ticker := time.NewTicker(o.config.BatchTimeout)
@@ -146,17 +160,16 @@ func (o *Orchestrator) runTransformer(ctx context.Context, table string, recordC
 	}
 }
 
+// startWriters initializes the ingestion stage of the pipeline.
 func (o *Orchestrator) startWriters(ctx context.Context, g *errgroup.Group, opID, table string, dst adapter.TargetAdapter, batchCh <-chan []*record.Record) {
-	var wg sync.WaitGroup
 	for i := 0; i < o.config.NumWriters; i++ {
-		wg.Add(1)
 		g.Go(func() error {
-			defer wg.Done()
 			return o.runWriter(ctx, opID, table, dst, batchCh)
 		})
 	}
 }
 
+// runWriter consumes batches and performs bulk ingestion into the target database.
 func (o *Orchestrator) runWriter(ctx context.Context, opID, table string, dst adapter.TargetAdapter, batchCh <-chan []*record.Record) error {
 	batchCount := 0
 	flushEvery := o.config.FlushEveryNBatches
@@ -191,6 +204,7 @@ func (o *Orchestrator) runWriter(ctx context.Context, opID, table string, dst ad
 	}
 }
 
+// saveCheckpoints persists the progress of all partitions represented in a batch.
 func (o *Orchestrator) saveCheckpoints(ctx context.Context, opID string, batch []*record.Record) {
 	progress := make(map[string]*checkpoint.PartitionCheckpoint)
 

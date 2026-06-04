@@ -13,9 +13,12 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Partitions splits the source collection into n partitions using MongoDB's
-// splitVector admin command. Falls back to a min/max _id range split when
-// splitVector is unavailable (e.g. on Atlas or non-admin connections).
+// Partitions analyzes a MongoDB collection and returns a slice of Partition
+// boundaries for parallel processing. It attempts to use the high-performance
+// 'splitVector' command for balanced chunks.
+//
+// If 'splitVector' is restricted (common in Atlas or non-admin roles), it
+// falls back to statistical sampling of ObjectIDs to determine ranges.
 func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	if n <= 1 {
 		return []adapter.Partition{{ID: "p0", Table: table}}, nil
@@ -24,18 +27,15 @@ func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]a
 	db := a.client.Database(a.config.Database)
 	namespace := fmt.Sprintf("%s.%s", a.config.Database, table)
 
-	// Get collection stats to estimate per-chunk size.
 	statsResult := db.RunCommand(ctx, bson.D{{Key: "collStats", Value: table}})
 	var stats struct {
 		Size  int64 `bson:"size"`
 		Count int64 `bson:"count"`
 	}
 	if err := statsResult.Decode(&stats); err != nil || stats.Count == 0 {
-		// Collection is empty or collStats unavailable — single partition.
 		return []adapter.Partition{{ID: "p0", Table: table}}, nil
 	}
 
-	// Calculate maxChunkSize in MB for splitVector.
 	avgDocSize := float64(stats.Size) / float64(stats.Count)
 	docsPerPartition := float64(stats.Count) / float64(n)
 	maxChunkSizeMB := math.Max(1, (docsPerPartition*avgDocSize)/(1024*1024))
@@ -54,7 +54,6 @@ func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]a
 	adminDB := a.client.Database("admin")
 	err := adminDB.RunCommand(ctx, cmd).Decode(&splitResult)
 	if err != nil || splitResult.OK != 1 {
-		// splitVector not available (Atlas, non-admin) — use min/max fallback.
 		return a.fallbackPartitions(ctx, table, n)
 	}
 
@@ -75,7 +74,6 @@ func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]a
 		})
 		lastKey = key
 	}
-	// Final open-ended partition.
 	partitions = append(partitions, adapter.Partition{
 		ID:    fmt.Sprintf("p%d", len(partitions)),
 		Table: table,
@@ -86,12 +84,11 @@ func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]a
 	return partitions, nil
 }
 
-// fallbackPartitions creates n partitions by sampling boundary ObjectIDs using
-// $sample. This works on Atlas and any deployment without splitVector access.
+// fallbackPartitions calculates partition boundaries by sampling random
+// documents from the collection. The sampled _id values are used as splitting points.
 func (a *MongoAdapter) fallbackPartitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	coll := a.client.Database(a.config.Database).Collection(table)
 
-	// Sample n-1 boundary documents to get n roughly equal ranges.
 	sampleSize := n - 1
 	if sampleSize <= 0 {
 		return []adapter.Partition{{ID: "p0", Table: table}}, nil
@@ -105,7 +102,6 @@ func (a *MongoAdapter) fallbackPartitions(ctx context.Context, table string, n i
 
 	cursor, err := coll.Aggregate(ctx, pipeline)
 	if err != nil {
-		// If aggregation fails, return a single partition as a safe fallback.
 		return []adapter.Partition{{ID: "p0", Table: table}}, nil
 	}
 	defer cursor.Close(ctx)
@@ -146,9 +142,9 @@ func (a *MongoAdapter) fallbackPartitions(ctx context.Context, table string, n i
 	return partitions, nil
 }
 
-// ReadPartition streams all records from a single partition onto ch and then
-// closes ch. It honours ctx cancellation and returns a non-nil error on any
-// fatal read failure.
+// ReadPartition streams documents from a specific _id range into a channel.
+// It uses range-based filters ($gte, $lt) and sorts by _id to ensure efficient
+// scanning and avoidance of memory-intensive sorting.
 func (a *MongoAdapter) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
 	defer close(ch)
 
@@ -183,7 +179,6 @@ func (a *MongoAdapter) ReadPartition(ctx context.Context, p adapter.Partition, c
 			return fmt.Errorf("failed to decode document in partition %s: %w", p.ID, err)
 		}
 
-		// Convert _id to string for Record.ID.
 		var id string
 		rawID := doc["_id"]
 		switch v := rawID.(type) {

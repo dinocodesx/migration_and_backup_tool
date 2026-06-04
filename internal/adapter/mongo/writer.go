@@ -11,21 +11,20 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// WriteBatch writes a batch of records to MongoDB using an unordered BulkWrite
-// with upsert semantics, making each write idempotent.
+// WriteBatch ingests a slice of records into MongoDB using an unordered
+// BulkWrite operation. It employs upsert semantics ('ReplaceOne' with
+// 'Upsert: true') to ensure idempotency; records with existing _ids are
+// overwritten, while new ones are created.
 func (a *MongoAdapter) WriteBatch(ctx context.Context, batch []*record.Record) (int, error) {
 	if len(batch) == 0 {
 		return 0, nil
 	}
 
-	// All records in a batch are expected to belong to the same collection.
 	table := batch[0].Metadata.SourceTable
 	coll := a.client.Database(a.config.Database).Collection(table)
 
 	models := make([]mongo.WriteModel, 0, len(batch))
 	for _, rec := range batch {
-		// Use rec.ID as the _id. Remove _id from Data to prevent duplicate key
-		// errors if the source document already carried _id in its fields.
 		docData := make(bson.M, len(rec.Data))
 		for k, v := range rec.Data {
 			if k != "_id" {
@@ -44,24 +43,18 @@ func (a *MongoAdapter) WriteBatch(ctx context.Context, batch []*record.Record) (
 	opts := options.BulkWrite().SetOrdered(false)
 	result, err := coll.BulkWrite(ctx, models, opts)
 	if err != nil {
-		// BulkWriteException can carry partial results — report them.
 		written := 0
 		if result != nil {
-			// UpsertedCount: new docs; ModifiedCount: existing docs changed.
-			// Do NOT include MatchedCount (matched ≠ written).
 			written = int(result.UpsertedCount + result.ModifiedCount + result.InsertedCount)
 		}
 		return written, fmt.Errorf("bulk write failed: %w", err)
 	}
 
-	// MatchedCount is deliberately excluded — it counts documents that matched
-	// the filter but may not have been modified (identical content).
 	return int(result.UpsertedCount + result.ModifiedCount + result.InsertedCount), nil
 }
 
-// ApplySchema ensures the target collection exists and creates any required
-// indexes. MongoDB creates collections lazily, but pre-creating guarantees the
-// collection is ready before any writes arrive.
+// ApplySchema ensures the target collection exists and creates unique indexes
+// for any fields marked as PrimaryKey that are not the standard '_id' field.
 func (a *MongoAdapter) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	db := a.client.Database(a.config.Database)
 
@@ -76,7 +69,6 @@ func (a *MongoAdapter) ApplySchema(ctx context.Context, s *schema.Schema) error 
 		}
 	}
 
-	// Create unique indexes for non-_id primary key columns.
 	for _, col := range s.Columns {
 		if col.PrimaryKey && col.Name != "_id" {
 			indexModel := mongo.IndexModel{

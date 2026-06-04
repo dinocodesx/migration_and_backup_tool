@@ -10,22 +10,33 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Writer handles bulk writing to PostgreSQL using the COPY protocol.
+// Writer implements high-performance data ingestion for PostgreSQL.
+// It is designed to work with a single target table and uses the binary
+// COPY protocol (via pgx.CopyFrom) for maximum throughput.
 type Writer struct {
-	db    *pgxpool.Pool
+	// db is the connection pool used for COPY operations.
+	db *pgxpool.Pool
+	// table is the name of the target table.
 	table string
 }
 
+// NewWriter creates a new Writer instance for the specified target table.
 func NewWriter(db *pgxpool.Pool, table string) *Writer {
 	return &Writer{db: db, table: table}
 }
 
+// WriteBatch inserts a slice of records into the target table using the
+// PostgreSQL COPY protocol. This is significantly faster than individual
+// INSERT statements.
+//
+// It extracts the column names from the first record in the batch and
+// expects all subsequent records in the same batch to have an identical
+// field set.
 func (w *Writer) WriteBatch(ctx context.Context, batch []*record.Record) (int, error) {
 	if len(batch) == 0 {
 		return 0, nil
 	}
 
-	// Extract column names from the first record
 	columns := make([]string, 0, len(batch[0].Data))
 	for col := range batch[0].Data {
 		columns = append(columns, col)
@@ -53,8 +64,10 @@ func (w *Writer) WriteBatch(ctx context.Context, batch []*record.Record) (int, e
 	return int(count), nil
 }
 
+// ApplySchema creates the target table if it does not exist. It maps canonical
+// gomigrate types back to PostgreSQL-specific types and handles primary key
+// and nullability constraints.
 func (w *Writer) ApplySchema(ctx context.Context, s *schema.Schema) error {
-	// Simple CREATE TABLE implementation
 	tableName := pgx.Identifier{s.Name}.Sanitize()
 	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (", tableName)
 	for i, col := range s.Columns {
@@ -79,6 +92,8 @@ func (w *Writer) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	return nil
 }
 
+// mapToPostgresType converts a canonical gomigrate type string to a valid
+// PostgreSQL data type string for use in CREATE TABLE statements.
 func mapToPostgresType(t string) string {
 	switch t {
 	case "int64":
