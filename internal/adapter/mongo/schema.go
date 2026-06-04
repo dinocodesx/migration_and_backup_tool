@@ -11,7 +11,12 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Schema infers the schema of a MongoDB collection by sampling the first 1000 documents.
+// Schema infers the schema of a MongoDB collection by sampling a subset of documents.
+// Since MongoDB is schema-less, it scans up to the first 1000 documents to
+// identify the union of all fields and their types.
+//
+// All fields are marked as Nullable since MongoDB does not enforce field presence.
+// The "_id" field is always identified as the PrimaryKey.
 func (a *MongoAdapter) Schema(ctx context.Context, table string) (*schema.Schema, error) {
 	coll := a.client.Database(a.config.Database).Collection(table)
 
@@ -66,6 +71,8 @@ func (a *MongoAdapter) Schema(ctx context.Context, table string) (*schema.Schema
 }
 
 // inferType maps a BSON value to a standard gomigrate type string.
+// It handles common BSON types like ObjectID, DateTime, and Decimal128,
+// mapping them to their closest counterparts in the gomigrate type system.
 func inferType(v any) string {
 	if v == nil {
 		return "null"

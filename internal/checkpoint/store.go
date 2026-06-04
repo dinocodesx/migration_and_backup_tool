@@ -56,10 +56,6 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// --------------------------------------------------------------------------
-// Meta
-// --------------------------------------------------------------------------
-
 // SaveMeta persists the top-level operation metadata.
 func (s *Store) SaveMeta(meta OperationMeta) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
@@ -88,10 +84,6 @@ func (s *Store) GetMeta(opID string) (*OperationMeta, error) {
 	}
 	return &meta, nil
 }
-
-// --------------------------------------------------------------------------
-// Partition checkpoints
-// --------------------------------------------------------------------------
 
 // SavePartition persists or updates a single partition checkpoint.
 func (s *Store) SavePartition(opID string, cp PartitionCheckpoint) error {
@@ -206,10 +198,6 @@ func (s *Store) DeleteOperation(opID string) error {
 		return nil
 	})
 }
-
-// --------------------------------------------------------------------------
-// Helpers
-// --------------------------------------------------------------------------
 
 // partitionKey returns the bbolt key for a (opID, partitionID) pair.
 func partitionKey(opID, partitionID string) []byte {

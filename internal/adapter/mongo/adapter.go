@@ -1,3 +1,6 @@
+// Package mongo provides a MongoDB implementation of the adapter interfaces.
+// It supports both reading from (source) and writing to (target) MongoDB clusters,
+// including support for replica sets and sharded clusters via URI configuration.
 package mongo
 
 import (
@@ -13,21 +16,25 @@ import (
 )
 
 // MongoAdapter implements both adapter.SourceAdapter and adapter.TargetAdapter
-// for MongoDB.
+// for MongoDB. It manages the underlying mongo.Client and tracks connection
+// configuration.
 type MongoAdapter struct {
 	client *mongo.Client
 	config config.DBConfig
 }
 
 // NewMongoAdapter creates a new, unconnected MongoAdapter.
+// Use Connect() to initialize the connection before use.
 func NewMongoAdapter() *MongoAdapter {
 	return &MongoAdapter{}
 }
 
-// Type returns the adapter's database identifier.
+// Type returns the adapter's database identifier, which is "mongo".
 func (a *MongoAdapter) Type() string { return "mongo" }
 
-// Connect builds a MongoDB URI, creates a client, and verifies connectivity.
+// Connect builds a MongoDB connection URI from the provided configuration,
+// creates a new client, and verifies connectivity by pinging the primary.
+// It supports both single-host and multi-host (comma-separated) configurations.
 func (a *MongoAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 	a.config = cfg
 
@@ -69,7 +76,8 @@ func (a *MongoAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 	return nil
 }
 
-// Close disconnects the MongoDB client with a graceful timeout.
+// Close disconnects the MongoDB client with a graceful timeout (5 seconds).
+// If the client is nil, it returns immediately with no error.
 func (a *MongoAdapter) Close() error {
 	if a.client == nil {
 		return nil

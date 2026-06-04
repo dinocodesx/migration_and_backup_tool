@@ -10,16 +10,25 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Writer handles bulk writing to PostgreSQL using the COPY protocol.
+// Writer handles bulk writing to PostgreSQL using the high-performance COPY protocol.
+// It is specialized for a single target table.
 type Writer struct {
 	db    *pgxpool.Pool
 	table string
 }
 
+// NewWriter creates a new Writer for the specified table, backed by the
+// provided PostgreSQL connection pool.
 func NewWriter(db *pgxpool.Pool, table string) *Writer {
 	return &Writer{db: db, table: table}
 }
 
+// WriteBatch performs a bulk insert of records into the target table using
+// the PostgreSQL COPY protocol (via pgx.CopyFrom).
+//
+// It extracts column names from the first record in the batch and assumes
+// all subsequent records have the same structure. It returns the number
+// of rows successfully copied.
 func (w *Writer) WriteBatch(ctx context.Context, batch []*record.Record) (int, error) {
 	if len(batch) == 0 {
 		return 0, nil
@@ -53,6 +62,11 @@ func (w *Writer) WriteBatch(ctx context.Context, batch []*record.Record) (int, e
 	return int(count), nil
 }
 
+// ApplySchema creates the target table if it does not already exist,
+// based on the provided canonical schema definition.
+//
+// It maps canonical gomigrate types to their PostgreSQL equivalents
+// and handles primary key and nullability constraints.
 func (w *Writer) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	// Simple CREATE TABLE implementation
 	tableName := pgx.Identifier{s.Name}.Sanitize()
@@ -79,6 +93,8 @@ func (w *Writer) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	return nil
 }
 
+// mapToPostgresType converts a canonical gomigrate type string to its
+// corresponding PostgreSQL data type for table creation.
 func mapToPostgresType(t string) string {
 	switch t {
 	case "int64":

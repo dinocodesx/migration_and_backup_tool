@@ -10,18 +10,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Reader handles parallel reading from PostgreSQL.
+// Reader handles parallel reading from PostgreSQL by partitioning tables
+// based on primary key ranges.
 type Reader struct {
 	db *pgxpool.Pool
 }
 
-// NewReader creates a Reader backed by the given connection pool.
+// NewReader creates a new Reader backed by the provided PostgreSQL connection pool.
 func NewReader(db *pgxpool.Pool) *Reader {
 	return &Reader{db: db}
 }
 
-// Partitions splits the table into n roughly equal PK-range partitions.
-// If the table is empty, it returns an empty slice (no work to do).
+// Partitions calculates n roughly equal partitions for the specified table
+// based on the minimum and maximum values of the 'id' (primary key) column.
+//
+// If the table is empty, it returns an empty slice.
+// If the ID range is too small for the requested number of partitions,
+// it returns a single partition covering the entire range.
 func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	tableName := pgx.Identifier{table}.Sanitize()
 	query := fmt.Sprintf("SELECT MIN(id), MAX(id) FROM %s", tableName)
@@ -70,9 +75,12 @@ func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter
 	return partitions, nil
 }
 
-// ReadPartition streams every record in partition p onto ch, then closes ch.
-// It honours ctx cancellation and returns a non-nil error on any fatal read
-// failure.
+// ReadPartition executes a SELECT query for a specific ID range and streams
+// each resulting row as a record.Record onto the provided channel.
+//
+// It sanitizes the table name and uses parameterized queries for the range bounds.
+// The channel is closed when reading is complete or an error occurs.
+// It respects context cancellation.
 func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
 	defer close(ch)
 

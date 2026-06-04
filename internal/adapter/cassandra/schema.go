@@ -8,7 +8,9 @@ import (
 	"github.com/gocql/gocql"
 )
 
-// GetSchema introspects the Cassandra table using Metadata API.
+// GetSchema introspects the Cassandra table using the Metadata API provided by gocql.
+// It retrieves column names, types, and identifies primary key (partition and
+// clustering) columns.
 func GetSchema(ctx context.Context, session *gocql.Session, keyspace, table string) (*schema.Schema, error) {
 	ksMetadata, err := session.KeyspaceMetadata(keyspace)
 	if err != nil {
@@ -46,6 +48,9 @@ func GetSchema(ctx context.Context, session *gocql.Session, keyspace, table stri
 	return s, nil
 }
 
+// mapCassandraType converts a gocql.TypeInfo to the canonical gomigrate
+// type string. It handles standard CQL types including UUIDs, collections,
+// and blobs.
 func mapCassandraType(t gocql.TypeInfo) string {
 	switch t.Type() {
 	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeSmallInt, gocql.TypeTinyInt:

@@ -1,3 +1,6 @@
+// Package factory provides a centralized factory for creating database-specific adapters.
+// It abstracts the instantiation logic for both source and target adapters, allowing
+// the rest of the system to remain agnostic of the underlying database implementations.
 package factory
 
 import (
@@ -9,7 +12,9 @@ import (
 	"github.com/dinocodesx/gomigrate/internal/adapter/postgres"
 )
 
-// NewSourceAdapter returns a SourceAdapter based on the database type.
+// NewSourceAdapter returns a SourceAdapter based on the provided database type.
+// It supports "postgres", "mongo" (or "mongodb"), and "cassandra".
+// If the dbType is unsupported, it returns an error.
 func NewSourceAdapter(dbType string) (adapter.SourceAdapter, error) {
 	switch dbType {
 	case "postgres":
@@ -23,7 +28,9 @@ func NewSourceAdapter(dbType string) (adapter.SourceAdapter, error) {
 	}
 }
 
-// NewTargetAdapter returns a TargetAdapter based on the database type.
+// NewTargetAdapter returns a TargetAdapter based on the provided database type.
+// It supports "postgres", "mongo" (or "mongodb"), and "cassandra".
+// If the dbType is unsupported, it returns an error.
 func NewTargetAdapter(dbType string) (adapter.TargetAdapter, error) {
 	switch dbType {
 	case "postgres":

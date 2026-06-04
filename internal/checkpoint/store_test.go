@@ -46,7 +46,7 @@ func TestStore_ListPartitions(t *testing.T) {
 	defer cleanup()
 
 	opID := "op-list"
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		cp := PartitionCheckpoint{
 			PartitionID: string(rune('a' + i)),
 			Status:      StatusPending,

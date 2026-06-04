@@ -9,8 +9,13 @@ import (
 )
 
 // GetSchema introspects the PostgreSQL database to get the canonical schema of
-// a table.  The query filters by table_schema to avoid collisions when multiple
-// schemas contain tables with the same name.
+// a table. It queries the information_schema.columns table to retrieve column
+// names, data types, nullability, and default values.
+//
+// The query filters by table_schema to avoid collisions when multiple
+// schemas contain tables with the same name. It also identifies primary key
+// columns by joining information_schema.table_constraints and
+// information_schema.key_column_usage.
 func GetSchema(ctx context.Context, db *pgxpool.Pool, table, tableSchema string) (*schema.Schema, error) {
 	if tableSchema == "" {
 		tableSchema = "public"
@@ -93,8 +98,8 @@ func GetSchema(ctx context.Context, db *pgxpool.Pool, table, tableSchema string)
 	return s, nil
 }
 
-// mapPostgresType converts a PostgreSQL data_type string to the canonical
-// gomigrate type string.
+// mapPostgresType converts a PostgreSQL data_type string (from information_schema)
+// to the canonical gomigrate type string used for schema mapping and record validation.
 func mapPostgresType(pgType string) string {
 	switch pgType {
 	case "integer", "bigint", "smallint", "int", "int2", "int4", "int8":

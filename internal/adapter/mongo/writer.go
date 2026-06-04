@@ -11,8 +11,16 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// WriteBatch writes a batch of records to MongoDB using an unordered BulkWrite
-// with upsert semantics, making each write idempotent.
+// WriteBatch writes a batch of records to MongoDB using an unordered BulkWrite.
+// It uses upsert semantics (`ReplaceOne` with `SetUpsert(true)`) based on the
+// record's ID, which is mapped to the MongoDB `_id` field.
+//
+// This approach ensures that the write operation is idempotent. If a record with
+// the same ID already exists, it is replaced; otherwise, a new document is inserted.
+//
+// The method returns the number of successfully processed documents (inserted,
+// upserted, or modified). If a partial failure occurs during the bulk write,
+// it returns the count of successful operations along with the error.
 func (a *MongoAdapter) WriteBatch(ctx context.Context, batch []*record.Record) (int, error) {
 	if len(batch) == 0 {
 		return 0, nil
@@ -59,9 +67,12 @@ func (a *MongoAdapter) WriteBatch(ctx context.Context, batch []*record.Record) (
 	return int(result.UpsertedCount + result.ModifiedCount + result.InsertedCount), nil
 }
 
-// ApplySchema ensures the target collection exists and creates any required
-// indexes. MongoDB creates collections lazily, but pre-creating guarantees the
-// collection is ready before any writes arrive.
+// ApplySchema ensures the target collection exists and creates any required indexes.
+// While MongoDB creates collections lazily, this method explicitly creates it
+// to ensure it's ready.
+//
+// It also creates unique indexes for any columns marked as PrimaryKey that are
+// NOT named "_id" (since MongoDB already ensures uniqueness for "_id").
 func (a *MongoAdapter) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	db := a.client.Database(a.config.Database)
 

@@ -1,3 +1,6 @@
+// Package cassandra provides a Cassandra implementation of the gomigrate adapter interfaces.
+// It supports reading from and writing to Apache Cassandra and compatible databases
+// (like ScyllaDB) using the gocql driver.
 package cassandra
 
 import (
@@ -13,6 +16,8 @@ import (
 )
 
 // CassandraAdapter implements both adapter.SourceAdapter and adapter.TargetAdapter.
+// It manages the Cassandra session and coordinates reading and writing
+// through internal Reader and Writer components.
 type CassandraAdapter struct {
 	session  *gocql.Session
 	keyspace string
@@ -25,10 +30,12 @@ func NewCassandraAdapter() *CassandraAdapter {
 	return &CassandraAdapter{}
 }
 
-// Type returns the adapter's database identifier.
+// Type returns the adapter's database identifier "cassandra".
 func (a *CassandraAdapter) Type() string { return "cassandra" }
 
-// Connect opens a connection pool and validates connectivity.
+// Connect establishes a connection pool to the Cassandra cluster and validates
+// connectivity. It configures the cluster with token-aware round-robin host selection,
+// sets connection timeouts, and applies authentication if provided.
 func (a *CassandraAdapter) Connect(ctx context.Context, cfg config.DBConfig) error {
 	hosts := cfg.Hosts
 	if len(hosts) == 0 && cfg.Host != "" {
@@ -66,22 +73,25 @@ func (a *CassandraAdapter) Connect(ctx context.Context, cfg config.DBConfig) err
 	return nil
 }
 
-// Partitions delegates to the Reader.
+// Partitions splits a table into n token-range partitions for parallel reading.
+// It assumes the use of the Murmur3Partitioner.
 func (a *CassandraAdapter) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	return a.reader.Partitions(ctx, table, n)
 }
 
-// ReadPartition delegates to the Reader.
+// ReadPartition streams records from a specific token range into the provided channel.
 func (a *CassandraAdapter) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
 	return a.reader.ReadPartition(ctx, p, ch)
 }
 
-// Schema introspects the given table.
+// Schema introspects the Cassandra table metadata within the configured keyspace
+// to retrieve its schema definition, including partition and clustering keys.
 func (a *CassandraAdapter) Schema(ctx context.Context, table string) (*schema.Schema, error) {
 	return GetSchema(ctx, a.session, a.keyspace, table)
 }
 
-// WriteBatch writes a batch of records to the target table.
+// WriteBatch writes a batch of records to the target table. It lazily initializes
+// the Writer if it hasn't been created yet.
 func (a *CassandraAdapter) WriteBatch(ctx context.Context, batch []*record.Record) (int, error) {
 	if len(batch) == 0 {
 		return 0, nil
@@ -92,13 +102,14 @@ func (a *CassandraAdapter) WriteBatch(ctx context.Context, batch []*record.Recor
 	return a.writer.WriteBatch(ctx, batch)
 }
 
-// ApplySchema creates (or ensures) the target table and caches the writer.
+// ApplySchema creates the target table with the specified schema and initializes
+// the Writer.
 func (a *CassandraAdapter) ApplySchema(ctx context.Context, s *schema.Schema) error {
 	a.writer = NewWriter(a.session, a.keyspace, s.Name)
 	return a.writer.ApplySchema(ctx, s)
 }
 
-// Close releases all connections.
+// Close terminates the Cassandra session.
 func (a *CassandraAdapter) Close() error {
 	if a.session != nil {
 		a.session.Close()

@@ -13,9 +13,13 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Partitions splits the source collection into n partitions using MongoDB's
-// splitVector admin command. Falls back to a min/max _id range split when
-// splitVector is unavailable (e.g. on Atlas or non-admin connections).
+// Partitions splits the source collection into n partitions.
+// It first attempts to use MongoDB's internal `splitVector` command, which is the
+// most efficient way to get balanced chunks but requires admin privileges and
+// direct access to shards (won't work on Atlas or non-privileged connections).
+//
+// If `splitVector` fails or is unavailable, it automatically falls back to
+// fallbackPartitions(), which uses statistical sampling to find boundaries.
 func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	if n <= 1 {
 		return []adapter.Partition{{ID: "p0", Table: table}}, nil
@@ -87,7 +91,11 @@ func (a *MongoAdapter) Partitions(ctx context.Context, table string, n int) ([]a
 }
 
 // fallbackPartitions creates n partitions by sampling boundary ObjectIDs using
-// $sample. This works on Atlas and any deployment without splitVector access.
+// the $sample aggregation stage. This works on MongoDB Atlas and any deployment
+// where splitVector access is restricted.
+//
+// It samples n-1 documents, sorts them by _id, and uses their _id values as the
+// range boundaries for the resulting partitions.
 func (a *MongoAdapter) fallbackPartitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	coll := a.client.Database(a.config.Database).Collection(table)
 
@@ -146,9 +154,12 @@ func (a *MongoAdapter) fallbackPartitions(ctx context.Context, table string, n i
 	return partitions, nil
 }
 
-// ReadPartition streams all records from a single partition onto ch and then
-// closes ch. It honours ctx cancellation and returns a non-nil error on any
-// fatal read failure.
+// ReadPartition streams all records from a single partition onto ch.
+// It uses the Start and End keys of the partition to filter the range of _ids
+// to read. It sorts by _id to ensure efficient scanning and consistent results.
+//
+// Records are fetched in batches (default 1000) to optimize throughput.
+// The channel ch is closed when the reading is complete (either success or error).
 func (a *MongoAdapter) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
 	defer close(ch)
 

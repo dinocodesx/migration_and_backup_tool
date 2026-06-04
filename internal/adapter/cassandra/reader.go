@@ -11,15 +11,21 @@ import (
 	"github.com/gocql/gocql"
 )
 
+// Reader handles parallel reading from Cassandra by partitioning the token space.
 type Reader struct {
 	session  *gocql.Session
 	keyspace string
 }
 
+// NewReader creates a new Reader for the specified keyspace, backed by the
+// provided Cassandra session.
 func NewReader(session *gocql.Session, keyspace string) *Reader {
 	return &Reader{session: session, keyspace: keyspace}
 }
 
+// Partitions divides the entire Murmur3 token range ([-2^63, 2^63-1]) into
+// n equal sub-ranges. This allows for parallel scanning of the table
+// across different coordinators and vnodes.
 func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter.Partition, error) {
 	if n <= 0 {
 		n = 1
@@ -57,6 +63,13 @@ func (r *Reader) Partitions(ctx context.Context, table string, n int) ([]adapter
 	return partitions, nil
 }
 
+// ReadPartition streams every record within the specified token range onto ch.
+// It uses the token() function in the WHERE clause to perform an efficient
+// range scan.
+//
+// Records are identified by a composite key consisting of their partition and
+// clustering columns. UUIDs are automatically normalized to their string
+// representation for cross-database compatibility.
 func (r *Reader) ReadPartition(ctx context.Context, p adapter.Partition, ch chan<- *record.Record) error {
 	defer close(ch)
 
