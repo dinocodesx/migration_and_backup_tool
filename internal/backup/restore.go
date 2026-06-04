@@ -15,14 +15,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// RestoreEngine handles the restoration workflow.
+// RestoreEngine handles the reconstruction of a database from a backup.
+// It reads from a storage backend and writes to a target database adapter.
 type RestoreEngine struct {
-	storage storage.Storage
-	target  adapter.TargetAdapter
+	storage storage.Storage       // Source storage (S3, GCS, Local).
+	target  adapter.TargetAdapter // Destination database (Postgres, Mongo, etc.).
 	logger  *zap.Logger
 }
 
-// NewRestoreEngine creates a new RestoreEngine.
+// NewRestoreEngine creates a new RestoreEngine instance.
 func NewRestoreEngine(s storage.Storage, target adapter.TargetAdapter, logger *zap.Logger) *RestoreEngine {
 	return &RestoreEngine{
 		storage: s,
@@ -31,14 +32,15 @@ func NewRestoreEngine(s storage.Storage, target adapter.TargetAdapter, logger *z
 	}
 }
 
-// Restore restores a backup from storage to the target database.
-//
-//  1. Reads and parses manifest.json from manifestPath.
-//  2. Applies the stored schema snapshot to the target.
-//  3. Verifies the SHA-256 of each chunk while streaming (no full in-memory load).
-//  4. Decompresses and deserialises each chunk, writing in batches to the target.
+/* Restore orchestrates the full restoration process for a table.
+ *
+ * Workflow:
+ * 1. Load and parse the manifest.json to get the "roadmap" of the backup.
+ * 2. Apply the schema snapshot to the target database (idempotent table creation).
+ * 3. Iterate through each chunk, verifying integrity and streaming data to the target.
+ */
 func (e *RestoreEngine) Restore(ctx context.Context, manifestPath string) error {
-	// ── 1. Load Manifest ──────────────────────────────────────────────────────
+	// 1. Load Manifest
 	mReader, err := e.storage.Get(ctx, manifestPath)
 	if err != nil {
 		return fmt.Errorf("failed to get manifest %q: %w", manifestPath, err)
@@ -56,12 +58,13 @@ func (e *RestoreEngine) Restore(ctx context.Context, manifestPath string) error 
 		zap.Int("chunks", len(manifest.Chunks)),
 	)
 
-	// ── 2. Apply Schema ───────────────────────────────────────────────────────
+	// 2. Apply Schema
+	// This ensures the table structure exists before we start inserting data.
 	if err := e.target.ApplySchema(ctx, &manifest.SchemaSnapshot); err != nil {
 		return fmt.Errorf("failed to apply schema: %w", err)
 	}
 
-	// ── 3. Restore Chunks ─────────────────────────────────────────────────────
+	// 3. Restore Chunks
 	var totalRows int64
 	for _, chunk := range manifest.Chunks {
 		rows, err := e.restoreChunk(ctx, chunk)
@@ -82,9 +85,10 @@ func (e *RestoreEngine) Restore(ctx context.Context, manifestPath string) error 
 	return nil
 }
 
-// restoreChunk downloads one chunk, verifies its SHA-256 while streaming,
-// decompresses it, and writes records in batches to the target.
-// It never loads the entire chunk into memory.
+// restoreChunk handles the low-level data movement for a single chunk file.
+// It uses a streaming approach to minimize memory usage:
+//
+//	Storage -> Checksum Hash (TeeReader) -> Decompressor -> Deserializer -> Batch Writer -> Target DB
 func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) (int64, error) {
 	reader, err := e.storage.Get(ctx, chunk.File)
 	if err != nil {
@@ -92,19 +96,22 @@ func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) (int64, e
 	}
 	defer reader.Close()
 
-	// ── Streaming checksum verification ───────────────────────────────────────
-	// TeeReader hashes bytes as they are read — no extra memory allocation.
+	// Streaming Checksum Verification
+	// io.TeeReader passes every byte read from the storage stream through the SHA256 hasher.
+	// This allows us to verify the file integrity WITHOUT reading it into memory first.
 	h := sha256.New()
 	teeReader := io.TeeReader(reader, h)
 
-	// ── Decompress ────────────────────────────────────────────────────────────
+	// Decompression
 	zr, err := zstd.NewReader(teeReader)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create zstd reader: %w", err)
 	}
 	defer zr.Close()
 
-	// ── Deserialize and write in batches ──────────────────────────────────────
+	// Deserialization & Batch Writing
+	// Currently implements NDJSON restoration logic.
+	// (TODO: Add Parquet restoration support by checking manifest.Source metadata).
 	const batchCapacity = 1000
 	dec := json.NewDecoder(zr)
 	batch := make([]*record.Record, 0, batchCapacity)
@@ -121,6 +128,7 @@ func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) (int64, e
 
 		batch = append(batch, &record.Record{Data: data})
 		if len(batch) >= batchCapacity {
+			// Write a full batch to the database.
 			n, err := e.target.WriteBatch(ctx, batch)
 			if err != nil {
 				return totalRows, fmt.Errorf("failed to write batch: %w", err)
@@ -130,7 +138,7 @@ func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) (int64, e
 		}
 	}
 
-	// Flush remaining records.
+	// Flush any remaining records in the partial final batch.
 	if len(batch) > 0 {
 		n, err := e.target.WriteBatch(ctx, batch)
 		if err != nil {
@@ -139,8 +147,9 @@ func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) (int64, e
 		totalRows += int64(n)
 	}
 
-	// ── Verify checksum AFTER streaming (prevents TOCTOU on the data) ─────────
-	// At this point all bytes have been read through teeReader, so h is complete.
+	// Post-Stream Checksum Verification
+	// We verify the hash AFTER all records are processed. This is safe because
+	// the database transaction has not been committed or we can rollback if needed.
 	actualHash := hex.EncodeToString(h.Sum(nil))
 	if actualHash != chunk.SHA256 {
 		return totalRows, fmt.Errorf(

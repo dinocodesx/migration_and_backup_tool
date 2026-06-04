@@ -13,17 +13,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// ── MockSourceAdapter ─────────────────────────────────────────────────────────
-
-// MockSourceAdapter is a test double for adapter.SourceAdapter.
+// MockSourceAdapter is a test double for simulating various database behaviors.
 type MockSourceAdapter struct {
 	records []*record.Record
-	err     error // injected error, sent after all records
+	err     error // Optional error to return after processing records.
 }
 
-func (m *MockSourceAdapter) Type() string                                           { return "mock" }
-func (m *MockSourceAdapter) Connect(_ context.Context, _ config.DBConfig) error    { return nil }
-func (m *MockSourceAdapter) Close() error                                           { return nil }
+func (m *MockSourceAdapter) Type() string                                       { return "mock" }
+func (m *MockSourceAdapter) Connect(_ context.Context, _ config.DBConfig) error { return nil }
+func (m *MockSourceAdapter) Close() error                                       { return nil }
 func (m *MockSourceAdapter) Schema(_ context.Context, table string) (*schema.Schema, error) {
 	return &schema.Schema{Name: table}, nil
 }
@@ -31,7 +29,7 @@ func (m *MockSourceAdapter) Partitions(_ context.Context, table string, _ int) (
 	return []adapter.Partition{{ID: "p1", Table: table}}, nil
 }
 
-// ReadPartition sends all records then (optionally) an error, then closes ch.
+// ReadPartition simulates a database read by pushing records into the channel.
 func (m *MockSourceAdapter) ReadPartition(_ context.Context, _ adapter.Partition, ch chan<- *record.Record) error {
 	defer close(ch)
 	for _, r := range m.records {
@@ -40,9 +38,7 @@ func (m *MockSourceAdapter) ReadPartition(_ context.Context, _ adapter.Partition
 	return m.err
 }
 
-// ── FaultyStorage ─────────────────────────────────────────────────────────────
-
-// FaultyStorage is a storage backend that fails Put() with a configurable error.
+// FaultyStorage simulates storage failures (e.g., S3 outage or Disk Full).
 type FaultyStorage struct {
 	putErr error
 }
@@ -59,8 +55,7 @@ func (f *FaultyStorage) List(_ context.Context, _ string) ([]string, error)     
 func (f *FaultyStorage) Delete(_ context.Context, _ string) error               { return nil }
 func (f *FaultyStorage) Exists(_ context.Context, _ string) (bool, error)       { return false, nil }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
+// TestBackup_SourceError verifies that the engine correctly propagates errors from the database reader.
 func TestBackup_SourceError(t *testing.T) {
 	src := &MockSourceAdapter{
 		err: errors.New("database connection lost"),
@@ -75,6 +70,7 @@ func TestBackup_SourceError(t *testing.T) {
 	t.Logf("got expected error: %v", err)
 }
 
+// TestBackup_StorageError verifies that the engine handles write failures (e.g., S3 500s or Disk Full).
 func TestBackup_StorageError(t *testing.T) {
 	src := &MockSourceAdapter{
 		records: []*record.Record{{Data: map[string]any{"id": 1}}},
@@ -91,8 +87,9 @@ func TestBackup_StorageError(t *testing.T) {
 	t.Logf("got expected error: %v", err)
 }
 
+// TestBackup_EmptySource ensures the engine handles empty tables gracefully.
 func TestBackup_EmptySource(t *testing.T) {
-	src := &MockSourceAdapter{} // no records, no error
+	src := &MockSourceAdapter{} // No records.
 	store := &FaultyStorage{}
 	engine := NewEngine(store, NewNDJSONSerializer(), zap.NewNop(), 1)
 
