@@ -8,6 +8,7 @@ import (
 
 	"github.com/dinocodesx/gomigrate/internal/adapter"
 	"github.com/dinocodesx/gomigrate/internal/adapter/cassandra"
+	"github.com/dinocodesx/gomigrate/internal/adapter/iceberg"
 	"github.com/dinocodesx/gomigrate/internal/adapter/mongo"
 	"github.com/dinocodesx/gomigrate/internal/adapter/postgres"
 )
@@ -16,7 +17,7 @@ import (
 // the provided database type string. It serves as a dispatcher to instantiate
 // the correct adapter for extraction operations.
 //
-// Supported types: "postgres", "mongo" (or "mongodb"), and "cassandra".
+// Supported types: "postgres", "mongo" (or "mongodb"), "cassandra", and "iceberg".
 func NewSourceAdapter(dbType string) (adapter.SourceAdapter, error) {
 	switch dbType {
 	case "postgres":
@@ -25,6 +26,8 @@ func NewSourceAdapter(dbType string) (adapter.SourceAdapter, error) {
 		return mongo.NewMongoAdapter(), nil
 	case "cassandra":
 		return cassandra.NewCassandraAdapter(), nil
+	case "iceberg":
+		return iceberg.NewIcebergAdapter(), nil
 	default:
 		return nil, fmt.Errorf("unsupported source database type: %s", dbType)
 	}
@@ -34,7 +37,7 @@ func NewSourceAdapter(dbType string) (adapter.SourceAdapter, error) {
 // the provided database type string. It serves as a dispatcher to instantiate
 // the correct adapter for loading operations.
 //
-// Supported types: "postgres", "mongo" (or "mongodb"), and "cassandra".
+// Supported types: "postgres", "mongo" (or "mongodb"), "cassandra", and "iceberg".
 func NewTargetAdapter(dbType string) (adapter.TargetAdapter, error) {
 	switch dbType {
 	case "postgres":
@@ -43,6 +46,8 @@ func NewTargetAdapter(dbType string) (adapter.TargetAdapter, error) {
 		return mongo.NewMongoAdapter(), nil
 	case "cassandra":
 		return cassandra.NewCassandraAdapter(), nil
+	case "iceberg":
+		return iceberg.NewIcebergAdapter(), nil
 	default:
 		return nil, fmt.Errorf("unsupported target database type: %s", dbType)
 	}
