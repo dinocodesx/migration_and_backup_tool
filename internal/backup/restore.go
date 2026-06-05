@@ -1,13 +1,19 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/parquet/file"
+	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/dinocodesx/gomigrate/internal/adapter"
 	"github.com/dinocodesx/gomigrate/internal/record"
 	"github.com/dinocodesx/gomigrate/internal/storage"
@@ -100,21 +106,48 @@ func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) (int64, e
 	}
 	defer zr.Close()
 
+	// Since some formats like Parquet require random access (seeking) to read
+	// metadata from the footer, and S3/Zstd streams are linear, we must buffer
+	// the decompressed data into memory.
+	data, err := io.ReadAll(zr)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read chunk data: %w", err)
+	}
+
+	// Verify checksum after reading all data.
+	actualHash := hex.EncodeToString(h.Sum(nil))
+	if actualHash != chunk.SHA256 {
+		return 0, fmt.Errorf(
+			"checksum mismatch for chunk %d: expected %s, got %s",
+			chunk.Index, chunk.SHA256, actualHash,
+		)
+	}
+
+	// Determine the format based on file extension or magic bytes.
+	isParquet := strings.Contains(chunk.File, ".parquet") || bytes.HasPrefix(data, []byte("PAR1"))
+
+	if isParquet {
+		return e.restoreParquetChunk(ctx, data)
+	}
+	return e.restoreJSONChunk(ctx, data)
+}
+
+func (e *RestoreEngine) restoreJSONChunk(ctx context.Context, data []byte) (int64, error) {
 	const batchCapacity = 1000
-	dec := json.NewDecoder(zr)
+	dec := json.NewDecoder(bytes.NewReader(data))
 	batch := make([]*record.Record, 0, batchCapacity)
 	var totalRows int64
 
 	for {
-		var data map[string]any
-		if err := dec.Decode(&data); err != nil {
+		var row map[string]any
+		if err := dec.Decode(&row); err != nil {
 			if err == io.EOF {
 				break
 			}
 			return totalRows, fmt.Errorf("failed to decode record: %w", err)
 		}
 
-		batch = append(batch, &record.Record{Data: data})
+		batch = append(batch, &record.Record{Data: row})
 		if len(batch) >= batchCapacity {
 			n, err := e.target.WriteBatch(ctx, batch)
 			if err != nil {
@@ -133,13 +166,91 @@ func (e *RestoreEngine) restoreChunk(ctx context.Context, chunk Chunk) (int64, e
 		totalRows += int64(n)
 	}
 
-	actualHash := hex.EncodeToString(h.Sum(nil))
-	if actualHash != chunk.SHA256 {
-		return totalRows, fmt.Errorf(
-			"checksum mismatch for chunk %d: expected %s, got %s",
-			chunk.Index, chunk.SHA256, actualHash,
-		)
+	return totalRows, nil
+}
+
+func (e *RestoreEngine) restoreParquetChunk(ctx context.Context, data []byte) (int64, error) {
+	rs := bytes.NewReader(data)
+	pr, err := file.NewParquetReader(rs)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create parquet reader: %w", err)
 	}
 
-	return totalRows, nil
+	fr, err := pqarrow.NewFileReader(pr, pqarrow.ArrowReadProperties{}, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create pqarrow reader: %w", err)
+	}
+
+	rr, err := fr.GetRecordReader(ctx, nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get record reader: %w", err)
+	}
+	defer rr.Release()
+
+	const batchCapacity = 1000
+	batch := make([]*record.Record, 0, batchCapacity)
+	var totalRows int64
+
+	for rr.Next() {
+		recBatch := rr.RecordBatch()
+		for i := 0; i < int(recBatch.NumRows()); i++ {
+			rec := &record.Record{
+				Data: make(map[string]any),
+			}
+
+			for colIdx := 0; colIdx < int(recBatch.NumCols()); colIdx++ {
+				colName := recBatch.ColumnName(colIdx)
+				col := recBatch.Column(colIdx)
+				rec.Data[colName] = getVal(col, i)
+			}
+
+			batch = append(batch, rec)
+			if len(batch) >= batchCapacity {
+				n, err := e.target.WriteBatch(ctx, batch)
+				if err != nil {
+					return totalRows, fmt.Errorf("failed to write batch: %w", err)
+				}
+				totalRows += int64(n)
+				batch = batch[:0]
+			}
+		}
+	}
+
+	if len(batch) > 0 {
+		n, err := e.target.WriteBatch(ctx, batch)
+		if err != nil {
+			return totalRows, fmt.Errorf("failed to write final batch: %w", err)
+		}
+		totalRows += int64(n)
+	}
+
+	return totalRows, rr.Err()
+}
+
+// getVal performs type-safe extraction of a value from an Arrow array at a specific row index.
+func getVal(col arrow.Array, row int) any {
+	if col.IsNull(row) {
+		return nil
+	}
+
+	switch a := col.(type) {
+	case *array.Int64:
+		return a.Value(row)
+	case *array.Int32:
+		return a.Value(row)
+	case *array.Float64:
+		return a.Value(row)
+	case *array.Float32:
+		return a.Value(row)
+	case *array.Boolean:
+		return a.Value(row)
+	case *array.String:
+		return a.Value(row)
+	case *array.Binary:
+		return a.Value(row)
+	case *array.Timestamp:
+		return a.Value(row).ToTime(arrow.Microsecond)
+	default:
+		return fmt.Sprintf("%v", col)
+	}
 }

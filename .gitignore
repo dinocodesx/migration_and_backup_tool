@@ -29,3 +29,9 @@ go.work.sum
 
 # Environment variables
 .env
+
+# config files
+config.yaml
+
+# audit files
+audit.jsonl
